@@ -1,0 +1,66 @@
+// Package auth.v1 defines the gRPC contract for auth-service.
+//
+// This is the first proto contract in the project — it's meant to be a
+// readable example of the pattern every later service (`users.v1`,
+// `skills.v1`, `jobs.v1`) should follow: one package per service per major
+// version, comments on every RPC and field explaining intent (not just
+// restating the type), and request/response messages that are never shared
+// between RPCs even when they'd look identical today — a `LoginRequest` and
+// a `RegisterRequest` happen to have the same shape now, but they will drift
+// (MFA, device metadata, invite codes, ...) and sharing a type now just means
+// an awkward split later.
+syntax = "proto3";
+
+package auth.v1;
+
+option go_package = "github.com/Siddsharma25/skill-bridge-platform/backend/gen/auth/v1;authv1";
+
+// AuthService owns password-based credential storage and JWT issuance for
+// the whole platform. It is deliberately the *only* place a password ever
+// touches: the api-gateway forwards raw credentials over gRPC (private
+// network only) and never sees or stores a hash itself.
+//
+// Google OAuth (Phase 1c) and refresh-token rotation are intentionally out
+// of scope for this first version — see docs/DECISIONS.md for the phase
+// boundary.
+service AuthService {
+  // Register creates a new credential record (email + bcrypt password
+  // hash) and immediately issues an access token, so a client can move
+  // straight from signup into an authenticated session without a second
+  // round trip to Login.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Login verifies the supplied password against the stored bcrypt hash
+  // and, on success, issues a freshly signed access token. It intentionally
+  // does not distinguish "no such user" from "wrong password" in the error
+  // message — that distinction is a user-enumeration side channel.
+  rpc Login(LoginRequest) returns (LoginResponse);
+}
+
+// RegisterRequest carries a new user's chosen credentials in plaintext over
+// gRPC. This is safe only because gateway<->auth-service traffic stays on a
+// private network (in-cluster / loopback in the allinone binary) and is
+// never exposed publicly — the public-facing edge is GraphQL over HTTPS.
+message RegisterRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message RegisterResponse {
+  // user_id is the newly created credential row's UUID, used by the
+  // gateway/frontend to correlate this identity with later profile data
+  // owned by users-service (a different schema/service entirely).
+  string user_id = 1;
+  // access_token is a signed RS256 JWT the caller can use immediately;
+  // see internal/platform/jwks for how it's signed and verified.
+  string access_token = 2;
+}
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  string access_token = 1;
+}

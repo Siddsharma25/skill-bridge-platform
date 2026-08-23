@@ -1,0 +1,35 @@
+# Local dev infrastructure, introduced incrementally per phase rather than
+# all at once (see docs/DECISIONS.md and the Phased Rollout in the
+# architecture plan):
+#
+#   - Redis:              here from Phase 1a onward (this file).
+#   - Kafka:               NOT here yet — Phase 2 is the first thing that
+#                          consumes it (users-service -> jobs-service event
+#                          flow). Adding it now would mean running a broker
+#                          nothing publishes to or consumes from yet.
+#   - RabbitMQ:            NOT here yet — Phase 3 (notification-service) is
+#                          its first consumer, for the same reason.
+#
+# Postgres is deliberately absent too: this project uses a single shared
+# Supabase instance (schema-per-service) rather than a local Postgres
+# container, so there's nothing to run locally for the database.
+#
+# Usage: `make up` / `make down` / `make nuke` from backend/, or directly:
+#   docker compose -f docker/docker-compose.infra.yml up -d
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: sbp-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis-data:

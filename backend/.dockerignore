@@ -1,0 +1,27 @@
+# Keep Go build contexts small and free of anything that isn't source.
+.git
+**/.git
+
+# notification-service is NestJS/Node, not Go — it must never be pulled
+# into a Go service's build context (doesn't exist yet in Phase 1a, but
+# excluded up front so adding it later can't silently bloat auth-service's
+# or api-gateway's Docker build context).
+notification-service/
+notification-service/node_modules/
+notification-service/dist/
+
+# Go build artifacts / local tool caches, in case they exist on disk.
+bin/
+tmp/
+*.test
+*.out
+
+# Env files — never bake secrets into an image; compose/k8s inject these.
+.env
+.env.*
+!.env.example
+
+# Editor/OS cruft.
+.vscode/
+.idea/
+.DS_Store

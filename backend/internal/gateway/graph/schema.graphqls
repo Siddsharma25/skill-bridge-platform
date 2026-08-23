@@ -1,0 +1,38 @@
+# Phase 1a's entire public GraphQL surface: register and login. Both are
+# inherently unauthenticated (there's no session yet to authenticate with),
+# so request-time JWT verification middleware is deliberately deferred to
+# whichever phase adds the first query that actually needs a subject —
+# building auth middleware with nothing to protect yet is speculative work.
+# See docs/DECISIONS.md.
+
+type AuthPayload {
+  accessToken: String!
+  userId: String!
+}
+
+type Mutation {
+  """
+  Creates a new account and returns an immediately-usable access token,
+  so the client can skip a separate login call right after signup.
+  """
+  register(email: String!, password: String!): AuthPayload!
+
+  """
+  Verifies credentials against auth-service and returns a fresh access
+  token. Does not (and should not) reveal whether a failure was due to an
+  unknown email or a wrong password.
+  """
+  login(email: String!, password: String!): AuthPayload!
+}
+
+# A minimal Query type is required by the GraphQL spec even though Phase 1a
+# has nothing to query yet; it also gives Playground/introspection a root
+# to point at.
+type Query {
+  """
+  Trivial liveness check reachable from GraphQL itself, distinct from the
+  HTTP /healthz endpoint — useful for verifying the GraphQL execution path
+  specifically (parsing, resolver dispatch) rather than just the process.
+  """
+  ping: String!
+}

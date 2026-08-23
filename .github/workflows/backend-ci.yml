@@ -1,0 +1,67 @@
+name: backend-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # buf breaking (below) diffs against the .git history of main, so
+          # a shallow checkout wouldn't have anything to diff against.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+        # No live database or broker is required here by design — see
+        # internal/platform/db's tests and docs/DECISIONS.md. If this ever
+        # needs a real Postgres for an integration test, add a `services:`
+        # postgres container rather than pointing at Supabase from CI.
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.1
+          working-directory: backend
+
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.72.0"
+
+      - name: buf lint
+        run: buf lint
+
+      - name: buf breaking
+        # Compares the current protos against main's. On the very first PR
+        # into an empty history (or any run where `main` doesn't yet have
+        # committed protos to diff against), buf returns a non-fatal error
+        # rather than a real breaking-change finding — continue-on-error
+        # keeps that from blocking CI before there's a meaningful baseline.
+        # Revisit removing continue-on-error once main has a few proto
+        # revisions under it and this has been observed to work cleanly.
+        run: buf breaking --against '.git#branch=main'
+        continue-on-error: true

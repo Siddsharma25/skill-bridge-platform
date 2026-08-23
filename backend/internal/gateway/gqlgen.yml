@@ -1,0 +1,21 @@
+# gqlgen config for api-gateway. Run `make gen` (from backend/) after
+# editing graph/schema.graphqls — see backend/CLAUDE.md.
+schema:
+  - graph/schema.graphqls
+
+exec:
+  filename: graph/generated/generated.go
+  package: generated
+
+model:
+  filename: graph/model/models_gen.go
+  package: model
+
+resolver:
+  layout: follow-schema
+  dir: graph
+  package: graph
+  filename_template: "{name}.resolvers.go"
+
+# omit_slice_element_pointers/etc left at gqlgen defaults; nothing in this
+# schema needs custom scalar or model binding yet.
