@@ -1,0 +1,52 @@
+// Package skills.v1 defines the gRPC contract for skills-service, which
+// owns the platform's skill taxonomy (skills.skills). This is deliberately
+// the simplest service in the platform — one table, two RPCs — and is the
+// recommended candidate for the later grpc-gateway/OpenAPI learning
+// exercise (see docs/DECISIONS.md) precisely because there's no
+// distracting complexity here.
+syntax = "proto3";
+
+package skills.v1;
+
+option go_package = "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1;skillsv1";
+
+// SkillsService owns the canonical list of skills that both users
+// (users-service) and jobs (jobs-service) reference by ID. Neither of
+// those services stores a copy of a skill's name/category — they hold
+// only the ID and rely on the gateway to join against this service for
+// display data (a deliberate small N+1, see docs/DECISIONS.md).
+service SkillsService {
+  // CreateSkill adds a new skill to the taxonomy. Unauthenticated in
+  // Phase 1b — there is no role system yet, so anyone can propose a
+  // skill; see docs/DECISIONS.md for why that's an accepted gap here,
+  // not a bug to silently fix by inventing authorization early.
+  rpc CreateSkill(CreateSkillRequest) returns (CreateSkillResponse);
+
+  // ListSkills returns every skill in the taxonomy. No pagination yet —
+  // fine at this data scale; revisit if the taxonomy ever grows large
+  // enough to matter.
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
+}
+
+// Skill is the canonical shape referenced by ID from users-service
+// (user_skills) and jobs-service (job_required_skills).
+message Skill {
+  string id = 1;
+  string name = 2;
+  string category = 3;
+}
+
+message CreateSkillRequest {
+  string name = 1;
+  string category = 2;
+}
+
+message CreateSkillResponse {
+  Skill skill = 1;
+}
+
+message ListSkillsRequest {}
+
+message ListSkillsResponse {
+  repeated Skill skills = 1;
+}

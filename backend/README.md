@@ -6,17 +6,22 @@ fronted by a GraphQL gateway. It's a **learning project** — see the root
 the reasoning behind every non-obvious choice before making structural
 changes here.
 
-## What's here (Phase 1a)
+## What's here (Phase 1b)
 
 - **`cmd/auth-service`** — owns password credentials and JWT issuance.
   Speaks gRPC only (private network); see its own README for why.
+- **`cmd/skills-service`** — owns the shared skill taxonomy.
+- **`cmd/users-service`** — owns profile data and a user's claimed skills;
+  lazily provisions a profile on first touch (see `docs/DECISIONS.md`).
+- **`cmd/jobs-service`** — owns job postings and their required skills.
 - **`cmd/api-gateway`** — the public GraphQL edge. Holds no state of its
   own; every resolver is a thin pass-through to a backend gRPC service.
+  `myProfile`/`updateProfile`/`addUserSkill` are the first authenticated
+  operations — see `internal/gateway/authctx` and `docs/DECISIONS.md`.
 - **`internal/platform`** — the shared foundation every service uses:
   logging, request-ID propagation, health checks, graceful shutdown, the
-  Postgres connection helper, and JWKS signing/verification. Built once,
-  reused unchanged by every later service (`users-service`, `skills-service`,
-  `jobs-service`) rather than re-solved per service.
+  Postgres connection helper, and JWKS signing/verification. Built once in
+  Phase 1a, reused unchanged by every service added since.
 - **`proto/`** — gRPC contracts, proto-first via `buf`. See `proto/README.md`.
 - **`gen/`** — generated Go stubs from `proto/`. **Committed to git**, not
   regenerated as a hidden prerequisite — a clean checkout builds without
@@ -25,10 +30,10 @@ changes here.
   schema, plus `000_bootstrap.sql` (schemas + per-service Postgres roles,
   run once with an admin connection).
 
-Later phases add `users-service`, `skills-service`, `jobs-service`, Kafka,
-RabbitMQ, Redis caching, and a NestJS `notification-service` — see the
-Phased Rollout in the architecture plan. Don't build ahead of the current
-phase; each phase is independently demoable on purpose.
+Later phases add Kafka, RabbitMQ, Redis caching, GraphQL dataloaders,
+Google OAuth, and a NestJS `notification-service` — see the Phased Rollout
+in the architecture plan. Don't build ahead of the current phase; each
+phase is independently demoable on purpose.
 
 ## Why gRPC + GraphQL, not just REST
 
@@ -54,18 +59,25 @@ Running a service directly:
 ```
 cp .env.example .env   # then edit as needed
 go run ./cmd/auth-service
+go run ./cmd/skills-service
+go run ./cmd/users-service
+go run ./cmd/jobs-service
 go run ./cmd/api-gateway
 ```
 
-Both services degrade gracefully without a `DATABASE_URL` (there's no live
-Supabase project yet at this phase) — they still start and serve health
-checks, just report `/readyz` as not-ready.
+Every service degrades gracefully without a `DATABASE_URL` (there's no
+live Supabase project yet at this phase) — they still start and serve
+health checks, just report `/readyz` as not-ready and return `Unavailable`
+from any RPC that needs a database.
 
 ## Ports (dev defaults)
 
 | Service | gRPC | HTTP (health/JWKS/GraphQL) |
 |---|---|---|
 | auth-service | 9001 | 8081 |
+| skills-service | 9002 | 8082 |
+| users-service | 9003 | 8083 |
+| jobs-service | 9004 | 8084 |
 | api-gateway | — | 8080 |
 
 ## Conventions

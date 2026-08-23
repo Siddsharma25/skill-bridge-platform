@@ -1,0 +1,102 @@
+// Package users.v1 defines the gRPC contract for users-service, which owns
+// profile data (users.profiles) and the skills a user claims to have
+// (users.user_skills) — distinct from auth-service's credential store and
+// from skills-service's skill taxonomy.
+syntax = "proto3";
+
+package users.v1;
+
+option go_package = "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1;usersv1";
+
+// UsersService owns everything about a user that isn't a login credential
+// (auth-service) or part of the shared skill taxonomy (skills-service).
+//
+// There is no Kafka `user.registered` consumer yet (that lands in Phase 2
+// per docs/DECISIONS.md), so there's no event-driven trigger to create a
+// profile row when an account is registered. Instead, GetProfile and
+// UpdateProfile both lazily create an empty profile row the first time
+// they're called for a user_id that doesn't have one yet — an
+// upsert-on-first-touch substitute for the real provisioning flow. See
+// docs/DECISIONS.md for the Phase 1b -> 2 migration note: Phase 2 replaces
+// this lazy path with a proper Kafka-consumed provisioning flow, but the
+// row shape doesn't change, so nothing here needs to be revisited later.
+service UsersService {
+  // GetProfile returns user_id's profile, creating an empty one
+  // (display_name/bio both "") on first touch if none exists yet.
+  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+
+  // UpdateProfile creates the profile on first touch (same as GetProfile)
+  // and then applies whichever of display_name/bio were supplied. Both
+  // fields are optional so a caller can update just one without clobbering
+  // the other with an empty string.
+  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+
+  // AddUserSkill records (or updates the proficiency of) one skill on a
+  // user's profile. skill_id is trusted as a valid skills-service ID —
+  // users-service cannot verify this against skills-service's schema
+  // directly (schema-per-service isolation), so an invalid ID is only
+  // caught later, if at all, when the gateway tries to resolve it for
+  // display. Acceptable for Phase 1b; a stronger guarantee would need
+  // either a synchronous gRPC call to skills-service or an
+  // event-carried-state-transfer projection, neither of which is
+  // justified yet for a single ID field.
+  rpc AddUserSkill(AddUserSkillRequest) returns (AddUserSkillResponse);
+
+  // ListUserSkills returns every (skill_id, proficiency) pair for a user.
+  // It intentionally does not return skill names/categories — that's
+  // skills-service's data, and joining it in is the gateway's job (a
+  // small, deliberate N+1 left for Phase 1c's dataloader work).
+  rpc ListUserSkills(ListUserSkillsRequest) returns (ListUserSkillsResponse);
+}
+
+message Profile {
+  string user_id = 1;
+  string display_name = 2;
+  string bio = 3;
+}
+
+message GetProfileRequest {
+  string user_id = 1;
+}
+
+message GetProfileResponse {
+  Profile profile = 1;
+}
+
+message UpdateProfileRequest {
+  string user_id = 1;
+  // optional so the gateway can send only the field(s) the caller
+  // actually supplied (GraphQL's updateProfile(displayName, bio) has both
+  // arguments nullable) without an unset field being mistaken for "clear
+  // this to empty string."
+  optional string display_name = 2;
+  optional string bio = 3;
+}
+
+message UpdateProfileResponse {
+  Profile profile = 1;
+}
+
+// UserSkill is the shape users-service returns for a user's claimed
+// skills — just the reference (skill_id) and the user-asserted
+// proficiency, never the skill's name/category.
+message UserSkill {
+  string skill_id = 1;
+  string proficiency = 2;
+}
+
+message AddUserSkillRequest {
+  string user_id = 1;
+  string skill_id = 2;
+  string proficiency = 3;
+}
+
+message AddUserSkillResponse {}
+
+message ListUserSkillsRequest {
+  string user_id = 1;
+}
+
+message ListUserSkillsResponse {
+  repeated UserSkill user_skills = 1;
+}

@@ -10,6 +10,9 @@ package graph
 
 import (
 	authv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/auth/v1"
+	jobsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/jobs/v1"
+	skillsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1"
+	usersv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1"
 )
 
 // Resolver holds every dependency the GraphQL layer needs to call out to
@@ -17,5 +20,8 @@ import (
 // a *gorm.DB or similar) — api-gateway is stateless and talks to every
 // domain exclusively over gRPC, per docs/DECISIONS.md.
 type Resolver struct {
-	AuthClient authv1.AuthServiceClient
+	AuthClient   authv1.AuthServiceClient
+	SkillsClient skillsv1.SkillsServiceClient
+	UsersClient  usersv1.UsersServiceClient
+	JobsClient   jobsv1.JobsServiceClient
 }

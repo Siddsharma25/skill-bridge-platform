@@ -12,3 +12,9 @@ type Mutation struct {
 
 type Query struct {
 }
+
+type Skill struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+}

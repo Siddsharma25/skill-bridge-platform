@@ -17,5 +17,17 @@ resolver:
   package: graph
   filename_template: "{name}.resolvers.go"
 
-# omit_slice_element_pointers/etc left at gqlgen defaults; nothing in this
-# schema needs custom scalar or model binding yet.
+# Job, Profile, and UserSkill are bound to hand-written structs in
+# graph/model/extra_models.go instead of letting gqlgen generate plain
+# ones into models_gen.go. Each needs an extra Go field that isn't a
+# GraphQL field at all (e.g. Job.RequiredSkillIDs) so its corresponding
+# field resolver (requiredSkills, skills, skill) knows which
+# skills-service IDs to resolve — see schema.resolvers.go and
+# docs/DECISIONS.md for the deliberate N+1 this drives.
+models:
+  Job:
+    model: github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/model.Job
+  Profile:
+    model: github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/model.Profile
+  UserSkill:
+    model: github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/model.UserSkill

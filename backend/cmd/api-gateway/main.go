@@ -23,6 +23,10 @@ import (
 	"google.golang.org/grpc/status"
 
 	authv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/auth/v1"
+	jobsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/jobs/v1"
+	skillsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1"
+	usersv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/authctx"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/generated"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/health"
@@ -48,6 +52,9 @@ func main() {
 	httpPort := envOr("PORT", "8080")
 	authServiceAddr := envOr("AUTH_SERVICE_ADDR", "localhost:9001")
 	authJWKSURL := envOr("AUTH_SERVICE_JWKS_URL", "http://localhost:8081/.well-known/jwks.json")
+	skillsServiceAddr := envOr("SKILLS_SERVICE_ADDR", "localhost:9002")
+	usersServiceAddr := envOr("USERS_SERVICE_ADDR", "localhost:9003")
+	jobsServiceAddr := envOr("JOBS_SERVICE_ADDR", "localhost:9004")
 
 	// Dial auth-service. grpc.NewClient (not the deprecated blocking
 	// DialContext+WithBlock) connects lazily — the gateway starts even if
@@ -64,12 +71,47 @@ func main() {
 	}
 	authClient := authv1.NewAuthServiceClient(authConn)
 
-	// Fetch auth-service's JWKS once at startup. Phase 1a has nothing to
-	// verify yet (register/login are inherently unauthenticated), so this
-	// isn't wired into request-time middleware — it exists here to prove
-	// the JWKS plumbing (server publishes, client fetches/caches by kid)
-	// actually works end-to-end before a later phase depends on it for
-	// real request verification.
+	// skills-service and jobs-service stay unauthenticated in Phase 1b (no
+	// role system yet — see docs/DECISIONS.md), so their client
+	// connections only carry request-ID propagation, same as auth-service.
+	skillsConn, err := grpc.NewClient(
+		skillsServiceAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(requestid.UnaryClientInterceptor()),
+	)
+	if err != nil {
+		log.Fatal("failed to create skills-service gRPC client", zap.Error(err))
+	}
+	skillsClient := skillsv1.NewSkillsServiceClient(skillsConn)
+
+	jobsConn, err := grpc.NewClient(
+		jobsServiceAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(requestid.UnaryClientInterceptor()),
+	)
+	if err != nil {
+		log.Fatal("failed to create jobs-service gRPC client", zap.Error(err))
+	}
+	jobsClient := jobsv1.NewJobsServiceClient(jobsConn)
+
+	// users-service's client connection additionally carries the verified
+	// caller's user ID (set by authctx.Middleware below) as outgoing gRPC
+	// metadata — myProfile/updateProfile/addUserSkill are the first
+	// authenticated operations in this project (see docs/DECISIONS.md).
+	usersConn, err := grpc.NewClient(
+		usersServiceAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(requestid.UnaryClientInterceptor(), authctx.UnaryClientInterceptor()),
+	)
+	if err != nil {
+		log.Fatal("failed to create users-service gRPC client", zap.Error(err))
+	}
+	usersClient := usersv1.NewUsersServiceClient(usersConn)
+
+	// Fetch auth-service's JWKS once at startup and keep the client around
+	// for request-time verification — see internal/gateway/authctx, the
+	// first phase this plumbing is actually wired into request handling
+	// (Phase 1a only proved the fetch/cache path worked).
 	jwksClient := jwks.NewClient(authJWKSURL, 0)
 	startupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := jwksClient.Refresh(startupCtx); err != nil {
@@ -80,7 +122,12 @@ func main() {
 	}
 	cancel()
 
-	resolver := &graph.Resolver{AuthClient: authClient}
+	resolver := &graph.Resolver{
+		AuthClient:   authClient,
+		SkillsClient: skillsClient,
+		UsersClient:  usersClient,
+		JobsClient:   jobsClient,
+	}
 	srv := handler.NewDefaultServer(generated.NewExecutableSchema(generated.Config{Resolvers: resolver}))
 
 	mux := health.Mux(func(ctx context.Context) error {
@@ -106,7 +153,11 @@ func main() {
 		mux.Handle("/", playground.Handler("GraphQL Playground", "/query"))
 		log.Info("GraphQL Playground enabled at /")
 	}
-	mux.Handle("/query", srv)
+	// authctx.Middleware extracts and verifies a bearer token (if any)
+	// before the GraphQL handler runs, so myProfile/updateProfile/
+	// addUserSkill's requireUserID check (schema.resolvers.go) can read
+	// the verified caller — see docs/DECISIONS.md.
+	mux.Handle("/query", authctx.Middleware(jwksClient, log)(srv))
 
 	httpServer := &http.Server{
 		Addr:              ":" + httpPort,
@@ -126,6 +177,15 @@ func main() {
 		Cleanups: []shutdown.CleanupFunc{
 			func(_ context.Context) error {
 				return authConn.Close()
+			},
+			func(_ context.Context) error {
+				return skillsConn.Close()
+			},
+			func(_ context.Context) error {
+				return usersConn.Close()
+			},
+			func(_ context.Context) error {
+				return jobsConn.Close()
 			},
 		},
 	})

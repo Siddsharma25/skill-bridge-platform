@@ -1,6 +1,8 @@
 package jwks
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -43,4 +45,37 @@ func Sign(kp *KeyPair, issuer, userID, email string, ttl time.Duration) (string,
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = kp.KID
 	return token.SignedString(kp.Private)
+}
+
+// Verify is the verifier-side companion to Sign: it parses tokenString,
+// looks up the RSA public key named by the token's `kid` header via
+// client (fetching/caching from auth-service's JWKS as needed — see
+// client.go), and returns the validated claims. This is what api-gateway
+// uses to authenticate an incoming `Authorization: Bearer <token>` header
+// against auth-service's published keys, without auth-service ever
+// sharing its private key (see docs/DECISIONS.md's "gateway is the only
+// JWT verifier" decision).
+func Verify(ctx context.Context, client *Client, tokenString string) (*Claims, error) {
+	claims := &Claims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("jwks: unexpected signing method %v", t.Header["alg"])
+		}
+		kid, _ := t.Header["kid"].(string)
+		if kid == "" {
+			return nil, fmt.Errorf("jwks: token is missing a kid header")
+		}
+		n, e, err := client.GetKey(ctx, kid)
+		if err != nil {
+			return nil, err
+		}
+		return rsaPublicKeyFromParts(n, e), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("jwks: verify token: %w", err)
+	}
+	if !token.Valid {
+		return nil, fmt.Errorf("jwks: token failed validation")
+	}
+	return claims, nil
 }

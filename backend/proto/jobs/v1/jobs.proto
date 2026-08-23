@@ -1,0 +1,66 @@
+// Package jobs.v1 defines the gRPC contract for jobs-service, which owns
+// job postings (jobs.jobs) and the skills each posting requires
+// (jobs.job_required_skills).
+//
+// jobs.job_matches and jobs.user_skill_snapshot (the event-carried-state-
+// transfer projection that lets the matching worker score candidates
+// without querying users-service's schema directly — see
+// docs/DECISIONS.md) are Phase 2 additions once Kafka exists. Neither the
+// matching worker, the snapshot table, nor their migrations are part of
+// this contract yet.
+syntax = "proto3";
+
+package jobs.v1;
+
+option go_package = "github.com/Siddsharma25/skill-bridge-platform/backend/gen/jobs/v1;jobsv1";
+
+// JobsService owns job postings. required_skill_ids reference
+// skills-service's Skill IDs by value only — jobs-service cannot read
+// skills-service's schema (schema-per-service isolation), so it never
+// validates or stores a skill's name/category, just the ID. Resolving
+// those IDs to display names is the gateway's job (a deliberate N+1, left
+// for Phase 1c's dataloader work per docs/DECISIONS.md).
+service JobsService {
+  // CreateJob is unauthenticated in Phase 1b, same as CreateSkill — no
+  // role system exists yet, so anyone can post a job. See
+  // docs/DECISIONS.md.
+  rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
+
+  // ListJobs returns every job posting, most-recent first. No pagination
+  // yet, same reasoning as SkillsService.ListSkills.
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+
+  // GetJob returns a single job posting by ID, or NotFound.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+}
+
+message Job {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  repeated string required_skill_ids = 4;
+}
+
+message CreateJobRequest {
+  string title = 1;
+  string description = 2;
+  repeated string required_skill_ids = 3;
+}
+
+message CreateJobResponse {
+  Job job = 1;
+}
+
+message ListJobsRequest {}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+}
+
+message GetJobRequest {
+  string id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}

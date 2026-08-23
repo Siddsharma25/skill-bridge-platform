@@ -1,13 +1,55 @@
-# Phase 1a's entire public GraphQL surface: register and login. Both are
-# inherently unauthenticated (there's no session yet to authenticate with),
-# so request-time JWT verification middleware is deliberately deferred to
-# whichever phase adds the first query that actually needs a subject —
-# building auth middleware with nothing to protect yet is speculative work.
-# See docs/DECISIONS.md.
+# Phase 1a's entire public GraphQL surface was register/login, both
+# inherently unauthenticated. Phase 1b adds the first authenticated
+# queries/mutations (myProfile, updateProfile, addUserSkill) — see
+# docs/DECISIONS.md for the request-time JWT verification middleware that
+# now protects them (extracts `Authorization: Bearer <token>`, verifies
+# against auth-service's JWKS, forwards `user_id` to users-service).
+# skills/jobs queries and createSkill/createJob stay unauthenticated in
+# Phase 1b — there is no role system yet (see docs/DECISIONS.md for why
+# that's a known, accepted gap rather than a bug).
 
 type AuthPayload {
   accessToken: String!
   userId: String!
+}
+
+# Skill mirrors skills-service's Skill message one-to-one.
+type Skill {
+  id: ID!
+  name: String!
+  category: String!
+}
+
+# Job mirrors jobs-service's Job message, except requiredSkillIds (opaque
+# skills-service IDs on the wire) is resolved to full Skill objects here.
+# That resolution is a deliberate small N+1 (one skills-service call per
+# Job in a list) — see the requiredSkills field resolver in
+# schema.resolvers.go and docs/DECISIONS.md; left for Phase 1c's
+# dataloader work rather than solved now.
+type Job {
+  id: ID!
+  title: String!
+  description: String!
+  requiredSkills: [Skill!]!
+}
+
+# UserSkill pairs one of a user's claimed skills (resolved from
+# skills-service by ID, same N+1 caveat as Job.requiredSkills) with the
+# proficiency users-service stored for it.
+type UserSkill {
+  skill: Skill!
+  proficiency: String!
+}
+
+# Profile mirrors users-service's Profile, plus the user's skill list
+# joined in from ListUserSkills. See docs/DECISIONS.md for why
+# users-service lazily creates this row on first touch instead of
+# provisioning it at registration time (no Kafka consumer yet).
+type Profile {
+  userId: ID!
+  displayName: String!
+  bio: String!
+  skills: [UserSkill!]!
 }
 
 type Mutation {
@@ -23,11 +65,34 @@ type Mutation {
   unknown email or a wrong password.
   """
   login(email: String!, password: String!): AuthPayload!
+
+  """
+  Adds a new skill to the shared taxonomy. Unauthenticated in Phase 1b —
+  see docs/DECISIONS.md.
+  """
+  createSkill(name: String!, category: String!): Skill!
+
+  """
+  Creates a job posting requiring the given skills (by ID). Unauthenticated
+  in Phase 1b — see docs/DECISIONS.md.
+  """
+  createJob(title: String!, description: String!, requiredSkillIds: [ID!]!): Job!
+
+  """
+  Updates the caller's own profile. Both arguments are optional so a
+  caller can change just one field without clobbering the other with an
+  empty string. Requires a valid bearer token; lazily creates the profile
+  on first touch if none exists yet (see docs/DECISIONS.md).
+  """
+  updateProfile(displayName: String, bio: String): Profile!
+
+  """
+  Adds (or updates the proficiency of) one skill on the caller's own
+  profile. Requires a valid bearer token.
+  """
+  addUserSkill(skillId: ID!, proficiency: String!): Boolean!
 }
 
-# A minimal Query type is required by the GraphQL spec even though Phase 1a
-# has nothing to query yet; it also gives Playground/introspection a root
-# to point at.
 type Query {
   """
   Trivial liveness check reachable from GraphQL itself, distinct from the
@@ -35,4 +100,19 @@ type Query {
   specifically (parsing, resolver dispatch) rather than just the process.
   """
   ping: String!
+
+  "Returns every skill in the shared taxonomy. Unauthenticated."
+  skills: [Skill!]!
+
+  "Returns every job posting, most-recently-created first. Unauthenticated."
+  jobs: [Job!]!
+
+  "Returns a single job posting by ID, or null if none exists. Unauthenticated."
+  job(id: ID!): Job
+
+  """
+  Returns the caller's own profile, lazily creating it on first touch if
+  none exists yet. Requires a valid bearer token.
+  """
+  myProfile: Profile
 }

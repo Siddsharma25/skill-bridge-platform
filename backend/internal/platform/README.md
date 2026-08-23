@@ -64,9 +64,16 @@ plumbing) — not an actual round trip.
 ## jwks
 
 Two sides of the same coin. On auth-service: generate (or load from env)
-an RS256 keypair at startup and serve the public half as a JWKS document.
-On any verifier (api-gateway): fetch and cache that JWKS by `kid`, with a
-bounded refresh interval. The point of doing this instead of a shared HMAC
-secret in every service's env vars: rotating a key becomes "change one
-config value on auth-service, wait one cache TTL" instead of "coordinate a
-secret rollout across every service that verifies a token."
+an RS256 keypair at startup, serve the public half as a JWKS document
+(`Sign` issues tokens). On any verifier (api-gateway): fetch and cache
+that JWKS by `kid` with a bounded refresh interval (`Client`/`GetKey`),
+and `Verify` parses+validates an incoming token against it — the
+verifier-side companion to `Sign`, added in Phase 1b when
+`myProfile`/`updateProfile`/`addUserSkill` became the first operations
+that actually needed request-time verification (see
+`internal/gateway/authctx` and `docs/DECISIONS.md`; Phase 1a only proved
+the fetch/cache plumbing worked, with nothing yet to verify against it).
+The point of doing this instead of a shared HMAC secret in every
+service's env vars: rotating a key becomes "change one config value on
+auth-service, wait one cache TTL" instead of "coordinate a secret rollout
+across every service that verifies a token."

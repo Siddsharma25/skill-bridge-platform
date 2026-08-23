@@ -40,9 +40,26 @@ gen:
 ## Each service directory under migrations/ is a separate goose "workdir"
 ## because each service owns its own schema/role; 000_bootstrap.sql is run
 ## separately (manually, with an admin connection) before any of these.
+## Against real Supabase, each service should run this with its own scoped
+## DATABASE_URL (its own role); against a single throwaway local Postgres
+## (e.g. for the Phase 1b end-to-end smoke test) one admin DATABASE_URL
+## covering all schemas is fine to run all four in sequence with.
+##
+## -table is required on every invocation: goose's default tracking table
+## (goose_db_version, unqualified -> the `public` schema) is shared by
+## every -dir target against the same database/search_path, so the
+## second service to migrate sees the first service's version number and
+## silently no-ops ("no migrations to run") even though its own tables
+## were never created — discovered running this end-to-end in Phase 1b.
+## Each service's tracking table lives in its own schema instead, which
+## also means it exists under a role that can actually write it (a
+## scoped role has no grants on `public`).
 migrate-up:
 	@test -n "$$DATABASE_URL" || (echo "DATABASE_URL must be set" && exit 1)
-	goose -dir migrations/auth postgres "$$DATABASE_URL" up
+	goose -dir migrations/auth -table auth.goose_db_version postgres "$$DATABASE_URL" up
+	goose -dir migrations/users -table users.goose_db_version postgres "$$DATABASE_URL" up
+	goose -dir migrations/skills -table skills.goose_db_version postgres "$$DATABASE_URL" up
+	goose -dir migrations/jobs -table jobs.goose_db_version postgres "$$DATABASE_URL" up
 
 ## up/down/nuke: local infra lifecycle (Redis for now; Kafka/RabbitMQ land
 ## in later phases). nuke also drops volumes — use it when you want a truly

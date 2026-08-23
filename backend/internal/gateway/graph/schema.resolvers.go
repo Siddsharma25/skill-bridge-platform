@@ -8,12 +8,27 @@ package graph
 import (
 	"context"
 
-	"google.golang.org/grpc/status"
-
 	authv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/auth/v1"
+	jobsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/jobs/v1"
+	skillsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1"
+	usersv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/generated"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+// RequiredSkills is the resolver for the Job.requiredSkills field. It
+// resolves every skill_id jobs-service attached to this job against
+// skills-service's data — see resolveSkills for why that means fetching
+// the whole taxonomy and filtering locally (skills-service has no
+// single-ID lookup RPC). One ListSkills call per Job object returned by a
+// `jobs`/`job` query is a deliberate, small N+1 across sibling jobs.
+// TODO(phase 1c): dataloader — batch this across every Job in the same
+// response instead of one call each.
+func (r *jobResolver) RequiredSkills(ctx context.Context, obj *model.Job) ([]*model.Skill, error) {
+	return r.resolveSkills(ctx, obj.RequiredSkillIDs)
+}
 
 // Register is the resolver for the register field. It's a thin pass-through
 // to auth-service over gRPC — api-gateway never touches a password hash or
@@ -44,32 +59,179 @@ func (r *mutationResolver) Login(ctx context.Context, email string, password str
 	}, nil
 }
 
+// CreateSkill is the resolver for the createSkill field. Unauthenticated
+// in Phase 1b — there is no role system yet, so anyone can add a skill to
+// the taxonomy (see docs/DECISIONS.md).
+func (r *mutationResolver) CreateSkill(ctx context.Context, name string, category string) (*model.Skill, error) {
+	resp, err := r.SkillsClient.CreateSkill(ctx, &skillsv1.CreateSkillRequest{Name: name, Category: category})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	return toModelSkill(resp.GetSkill()), nil
+}
+
+// CreateJob is the resolver for the createJob field. Unauthenticated in
+// Phase 1b, same reasoning as CreateSkill.
+func (r *mutationResolver) CreateJob(ctx context.Context, title string, description string, requiredSkillIDs []string) (*model.Job, error) {
+	resp, err := r.JobsClient.CreateJob(ctx, &jobsv1.CreateJobRequest{
+		Title:            title,
+		Description:      description,
+		RequiredSkillIds: requiredSkillIDs,
+	})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	return toModelJob(resp.GetJob()), nil
+}
+
+// UpdateProfile is the resolver for the updateProfile field. Requires an
+// authenticated caller (see requireUserID); lazily creates the profile on
+// first touch via users-service if none exists yet (see
+// docs/DECISIONS.md). displayName/bio are both optional so a caller can
+// change just one without clobbering the other with an empty string.
+func (r *mutationResolver) UpdateProfile(ctx context.Context, displayName *string, bio *string) (*model.Profile, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.UsersClient.UpdateProfile(ctx, &usersv1.UpdateProfileRequest{
+		UserId:      userID,
+		DisplayName: displayName,
+		Bio:         bio,
+	})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	return toModelProfile(resp.GetProfile()), nil
+}
+
+// AddUserSkill is the resolver for the addUserSkill field. Requires an
+// authenticated caller; skillId is trusted as a valid skills-service ID
+// (see users.proto for why users-service can't verify it directly).
+func (r *mutationResolver) AddUserSkill(ctx context.Context, skillID string, proficiency string) (bool, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return false, err
+	}
+	if _, err := r.UsersClient.AddUserSkill(ctx, &usersv1.AddUserSkillRequest{
+		UserId:      userID,
+		SkillId:     skillID,
+		Proficiency: proficiency,
+	}); err != nil {
+		return false, translateGRPCError(err)
+	}
+	return true, nil
+}
+
+// Skills is the resolver for the Profile.skills field. Fetches this
+// profile's (skill_id, proficiency) pairs from users-service in one call,
+// then leaves resolving each entry's full Skill to UserSkill's own
+// `skill` field resolver — see resolveSkills and docs/DECISIONS.md for
+// why that's a deliberate N+1 rather than solved here.
+func (r *profileResolver) Skills(ctx context.Context, obj *model.Profile) ([]*model.UserSkill, error) {
+	resp, err := r.UsersClient.ListUserSkills(ctx, &usersv1.ListUserSkillsRequest{UserId: obj.UserID})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	out := make([]*model.UserSkill, 0, len(resp.GetUserSkills()))
+	for _, us := range resp.GetUserSkills() {
+		out = append(out, &model.UserSkill{SkillID: us.GetSkillId(), Proficiency: us.GetProficiency()})
+	}
+	return out, nil
+}
+
 // Ping is the resolver for the ping field.
 func (r *queryResolver) Ping(_ context.Context) (string, error) {
 	return "pong", nil
 }
 
-// translateGRPCError unwraps a gRPC status error into a plain message
-// GraphQL clients can show directly, instead of gqlgen's default
-// "rpc error: code = ... desc = ..." wrapping leaking transport details.
-func translateGRPCError(err error) error {
-	if st, ok := status.FromError(err); ok {
-		return &gqlError{msg: st.Message()}
+// Skills is the resolver for the Query.skills field. Unauthenticated.
+func (r *queryResolver) Skills(ctx context.Context) ([]*model.Skill, error) {
+	resp, err := r.SkillsClient.ListSkills(ctx, &skillsv1.ListSkillsRequest{})
+	if err != nil {
+		return nil, translateGRPCError(err)
 	}
-	return err
+	out := make([]*model.Skill, 0, len(resp.GetSkills()))
+	for _, sk := range resp.GetSkills() {
+		out = append(out, toModelSkill(sk))
+	}
+	return out, nil
 }
 
-type gqlError struct{ msg string }
+// Jobs is the resolver for the Query.jobs field. Unauthenticated.
+func (r *queryResolver) Jobs(ctx context.Context) ([]*model.Job, error) {
+	resp, err := r.JobsClient.ListJobs(ctx, &jobsv1.ListJobsRequest{})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	out := make([]*model.Job, 0, len(resp.GetJobs()))
+	for _, j := range resp.GetJobs() {
+		out = append(out, toModelJob(j))
+	}
+	return out, nil
+}
 
-func (e *gqlError) Error() string { return e.msg }
+// Job is the resolver for the Query.job field. Unauthenticated. Returns
+// nil (not a GraphQL error) when jobs-service reports NotFound, matching
+// the schema's nullable return type.
+func (r *queryResolver) Job(ctx context.Context, id string) (*model.Job, error) {
+	resp, err := r.JobsClient.GetJob(ctx, &jobsv1.GetJobRequest{Id: id})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, nil
+		}
+		return nil, translateGRPCError(err)
+	}
+	return toModelJob(resp.GetJob()), nil
+}
+
+// MyProfile is the resolver for the Query.myProfile field. Requires an
+// authenticated caller; lazily creates the profile on first touch via
+// users-service if none exists yet (see docs/DECISIONS.md).
+func (r *queryResolver) MyProfile(ctx context.Context) (*model.Profile, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.UsersClient.GetProfile(ctx, &usersv1.GetProfileRequest{UserId: userID})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	return toModelProfile(resp.GetProfile()), nil
+}
+
+// Skill is the resolver for the UserSkill.skill field. Same deliberate N+1
+// as Job.requiredSkills — see resolveSkills.
+func (r *userSkillResolver) Skill(ctx context.Context, obj *model.UserSkill) (*model.Skill, error) {
+	skills, err := r.resolveSkills(ctx, []string{obj.SkillID})
+	if err != nil {
+		return nil, err
+	}
+	if len(skills) == 0 {
+		return nil, nil
+	}
+	return skills[0], nil
+}
+
+// Job returns generated.JobResolver implementation.
+func (r *Resolver) Job() generated.JobResolver { return &jobResolver{r} }
 
 // Mutation returns generated.MutationResolver implementation.
 func (r *Resolver) Mutation() generated.MutationResolver { return &mutationResolver{r} }
 
+// Profile returns generated.ProfileResolver implementation.
+func (r *Resolver) Profile() generated.ProfileResolver { return &profileResolver{r} }
+
 // Query returns generated.QueryResolver implementation.
 func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }
 
+// UserSkill returns generated.UserSkillResolver implementation.
+func (r *Resolver) UserSkill() generated.UserSkillResolver { return &userSkillResolver{r} }
+
 type (
-	mutationResolver struct{ *Resolver }
-	queryResolver    struct{ *Resolver }
+	jobResolver       struct{ *Resolver }
+	mutationResolver  struct{ *Resolver }
+	profileResolver   struct{ *Resolver }
+	queryResolver     struct{ *Resolver }
+	userSkillResolver struct{ *Resolver }
 )
