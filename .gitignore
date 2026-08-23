@@ -1,4 +1,29 @@
-# Logs
+# --- Frontend (Vite/Node) ---
+frontend/node_modules
+frontend/dist
+frontend/dist-ssr
+*.local
+
+# --- Backend (Go) ---
+backend/bin/
+backend/tmp/
+*.exe
+*.test
+*.out
+
+# --- notification-service (Node/NestJS) ---
+backend/notification-service/node_modules
+backend/notification-service/dist
+
+# --- Env files (never commit secrets; .env.example files stay tracked) ---
+**/.env
+**/.env.local
+**/.env.*.local
+
+# --- Docker ---
+docker/**/data/
+
+# --- Logs ---
 logs
 *.log
 npm-debug.log*
@@ -7,15 +32,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-.env
-.env.local
-.vscode
-
-# Editor directories and files
+# --- Editor/OS ---
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -25,4 +42,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
