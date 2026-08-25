@@ -1,0 +1,144 @@
+# render.yaml — Render's Blueprint spec for Phase 7's production deploy:
+# one free web service running backend/cmd/allinone (the single binary
+# registering all four backend gRPC servers on loopback plus api-gateway's
+# public HTTP/GraphQL/WebSocket server in one process). See
+# docs/DECISIONS.md's "Production deployment: a single allinone binary"
+# section and its "Phase 7 implementation notes" for the full reasoning,
+# and the root README's "Deploying" section for exactly what a human
+# still needs to do by hand (create the Supabase project, connect this
+# repo to Render, fill in every env var below marked `sync: false` via
+# Render's dashboard — never commit a real value here).
+#
+# Lives at the repo root, not backend/: Render's Blueprint feature looks
+# for render.yaml at the repository root by default when a GitHub repo is
+# connected as a Blueprint. `rootDir` on the service below is what points
+# its Docker build context at the right subdirectory of this monorepo
+# without render.yaml itself needing to live there — frontend/ will get
+# its own, separate Vercel connection (see vercel.json), not a second
+# Render service.
+services:
+  - type: web
+    name: skill-bridge-allinone
+    runtime: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile.allinone
+    dockerContext: .
+    # Render's free web service tier needs a health-check path to know
+    # the deploy succeeded and to route traffic only once ready. This is
+    # the exact same handler cmd/api-gateway/main.go's HTTP mux already
+    # serves (internal/platform/health.Mux) — liveness only, no
+    # dependency checks (see /readyz, not exposed here on purpose: a
+    # slow/unset DATABASE_URL shouldn't make Render kill and restart an
+    # otherwise-healthy process — same reasoning as every other
+    # cmd/<service>/main.go's own /healthz).
+    healthCheckPath: /healthz
+    envVars:
+      # Gates godotenv.Load() (irrelevant here — no .env file is shipped
+      # in the image) and a couple of dev-only conveniences (GraphQL
+      # Playground at "/", ephemeral JWT keypair generation's warning
+      # log). Always "production" for this service.
+      - key: ENV
+        value: production
+
+      # Render injects PORT itself; cmd/allinone/main.go reads it via
+      # envOr("PORT", "8080") for the one public listener. Nothing to set
+      # here — do NOT add a PORT entry, it would just be overridden by
+      # Render's own value anyway.
+
+      # --- Per-service scoped Postgres connection strings ---------------
+      # Four distinct Supavisor pooler URLs (transaction mode, port 6543),
+      # one per service's own scoped role — see
+      # migrations/000_bootstrap.sql and docs/DECISIONS.md for why each
+      # service gets its own role rather than one shared admin
+      # connection. `sync: false` means Render prompts for a real value
+      # in its dashboard after this Blueprint is applied; it is never
+      # read from this file. Format:
+      #   postgres://<role>.<project-ref>:<password>@<region>.pooler.supabase.com:6543/postgres
+      - key: AUTH_DATABASE_URL
+        sync: false
+      - key: SKILLS_DATABASE_URL
+        sync: false
+      - key: USERS_DATABASE_URL
+        sync: false
+      - key: JOBS_DATABASE_URL
+        sync: false
+
+      # --- JWT ------------------------------------------------------------
+      - key: JWT_ISSUER
+        value: skill-bridge-platform/auth-service
+      # REQUIRED in any deployment that isn't a single disposable local
+      # process: if unset, auth-service generates a fresh ephemeral RS256
+      # keypair on every process start (see internal/platform/jwks and
+      # docs/SECURITY.md) — fine for local dev, but on Render it means
+      # every redeploy/restart invalidates every outstanding access
+      # token, silently logging every user out. Generate one real RS256
+      # keypair (e.g. `openssl genrsa 2048`) and paste it here as a
+      # single-line PEM with literal `\n` escapes, exactly the format
+      # backend/.env.example documents.
+      - key: JWT_PRIVATE_KEY_PEM
+        sync: false
+
+      # --- Google OAuth (optional) -----------------------------------------
+      # Leave all three unset to skip Google login entirely — auth-service
+      # starts fine without them; GetGoogleAuthURL/GoogleOAuthCallback
+      # just return a clear FailedPrecondition until they're all set (see
+      # docs/DECISIONS.md's Phase 1c notes). Set GOOGLE_OAUTH_REDIRECT_URL
+      # to the deployed frontend's callback route once the Vercel URL is
+      # known (not a Vercel preview URL — see the plan's Phase 0 note on
+      # why a stable domain matters for the OAuth client's registered
+      # redirect URI).
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_URL
+        sync: false
+
+      # --- Redis (optional — deliberately NOT provisioned by this Blueprint) ---
+      # Left unset by default: the plan's Phase 7 bullet calls for rate
+      # limiting and pub/sub to "degrade gracefully to in-process behavior
+      # when REDIS_URL is unset," precisely because a free managed Redis
+      # with pub/sub support isn't guaranteed to exist on Render's free
+      # tier (Render's own Redis is paid-only). This was verified live
+      # during this phase's build — see docs/DECISIONS.md's Phase 7
+      # notes: allinone starts cleanly, rate limiting fails open (allows
+      # every request), skills/jobs caching becomes a no-op, and
+      # onNotification simply never receives a live push, all without
+      # crashing or erroring. If a free-tier external Redis (e.g. Upstash)
+      # is ever wired in, set REDIS_URL here and every one of those
+      # features activates with no code change — internal/platform/cache
+      # already handles both states identically to local dev.
+      - key: REDIS_URL
+        sync: false
+
+      # --- CORS -------------------------------------------------------------
+      # Comma-separated allowlist of frontend origins allowed to call this
+      # gateway from a browser (see internal/gateway/cors and
+      # docs/SECURITY.md). Update this once the real Vercel URL exists —
+      # cmd/allinone/main.go's default (localhost:5173) is a local-dev
+      # fallback, not something to leave pointed at in production.
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+      # --- Rate limiting (optional — sane defaults apply if unset) ---------
+      # See internal/gateway/ratelimit.DefaultConfig / docs/DECISIONS.md's
+      # Phase 1c notes (100 requests / 60s, keyed by user ID once
+      # authenticated else client IP). Uncomment and set explicit values
+      # only if the defaults ever need tuning for real traffic.
+      # - key: RATE_LIMIT_REQUESTS
+      #   value: "100"
+      # - key: RATE_LIMIT_WINDOW_SECONDS
+      #   value: "60"
+
+    # Explicitly NOT set here, by design (see docs/DECISIONS.md's
+    # "Production deployment" section and this phase's notes):
+    # KAFKA_BROKERS and RABBITMQ_URL. Per the plan, Kafka/RabbitMQ async
+    # flows (job matching, the RabbitMQ welcome-email queue, realtime
+    # WebSocket push notifications) simply don't exist in this
+    # production deployment — there is no free-tier managed Kafka/
+    # RabbitMQ this Blueprint provisions, and cmd/allinone/main.go
+    # already degrades every producer/consumer built on top of them to a
+    # clearly-logged no-op when these are unset, exactly like REDIS_URL
+    # above. The synchronous GraphQL surface (register, login,
+    # createSkill, createJob, myProfile, addUserSkill) is unaffected.

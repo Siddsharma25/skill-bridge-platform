@@ -18,6 +18,15 @@ changes here.
   own; every resolver is a thin pass-through to a backend gRPC service.
   `myProfile`/`updateProfile`/`addUserSkill` are the first authenticated
   operations — see `internal/gateway/authctx` and `docs/DECISIONS.md`.
+- **`cmd/allinone`** — Phase 7's production deploy target: one process
+  registering all four backend services' gRPC servers on loopback plus
+  api-gateway's public HTTP/GraphQL/WebSocket server, assembled from the
+  exact same `NewServer`/resolver-wiring code as the five services above.
+  See `cmd/allinone/README.md` and `docs/DECISIONS.md`'s Phase 7 notes for
+  why (short version: Render's free tier is realistically one web
+  service). Not part of local dev's everyday workflow — `go run
+  ./cmd/<service>` against `make up`'s infra-only stack, per below, still
+  is.
 - **`internal/platform`** — the shared foundation every service uses:
   logging, request-ID propagation, health checks, graceful shutdown, the
   Postgres connection helper, and JWKS signing/verification. Built once in
@@ -107,6 +116,18 @@ for local verification instead of real Supabase.
 | jobs-service | 9004 | 8084 |
 | api-gateway | — | 8080 |
 | notification-service | — | 8085 |
+
+`cmd/allinone` reuses these same four backend port numbers, bound to
+`127.0.0.1` instead of `0.0.0.0` (see `cmd/allinone/README.md`) — nothing
+outside that one process can reach them. Its own public port is `$PORT`
+(Render's convention, defaulting to 8080 locally), matching api-gateway's.
+
+## Deploying
+
+Production runs `cmd/allinone`, not the five services above — see the
+root README's "Deploying" section for the human steps (Supabase/Render/
+Vercel account creation) and `docs/DECISIONS.md`'s Phase 7 notes for the
+full reasoning and what was verified locally.
 
 ## Conventions
 

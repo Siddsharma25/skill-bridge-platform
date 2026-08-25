@@ -34,6 +34,7 @@ import (
 	skillsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1"
 	usersv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/authctx"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/cors"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/dataloader"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/generated"
@@ -62,6 +63,17 @@ func main() {
 	defer func() { _ = log.Sync() }()
 
 	httpPort := envOr("PORT", "8080")
+
+	// CORS (Phase 7): docs/SECURITY.md tracked "no CORS configuration
+	// exists yet" as an open gap since the frontend didn't call the
+	// backend at all until now. CORS_ALLOWED_ORIGINS is a comma-separated
+	// explicit allowlist (never "*"), defaulting to Vite's local dev
+	// origin — see internal/gateway/cors and docs/DECISIONS.md's Phase 7
+	// notes for why an exact allowlist, not a wildcard, even though this
+	// project's auth is a bearer token rather than a cookie.
+	allowedOrigins := cors.LoadAllowedOriginsFromEnv(os.Getenv)
+	log.Info("CORS allowed origins configured", zap.Strings("origins", allowedOrigins))
+
 	authServiceAddr := envOr("AUTH_SERVICE_ADDR", "localhost:9001")
 	authJWKSURL := envOr("AUTH_SERVICE_JWKS_URL", "http://localhost:8081/.well-known/jwks.json")
 	skillsServiceAddr := envOr("SKILLS_SERVICE_ADDR", "localhost:9002")
@@ -275,8 +287,13 @@ func main() {
 	}
 
 	httpServer := &http.Server{
-		Addr:              ":" + httpPort,
-		Handler:           mux,
+		Addr: ":" + httpPort,
+		// cors.Middleware wraps the whole mux (health checks included, not
+		// just /query) — it's a no-op for any request with no Origin
+		// header (same-origin, curl, grpcurl-style debugging), so wrapping
+		// broadly costs nothing and means a future route added to mux
+		// doesn't need to remember to opt in separately.
+		Handler:           cors.Middleware(allowedOrigins, log)(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

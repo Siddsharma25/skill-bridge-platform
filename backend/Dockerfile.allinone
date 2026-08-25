@@ -1,0 +1,38 @@
+# Multi-stage build for cmd/allinone — Phase 7's production deploy
+# target, the one image render.yaml points Render at. Same distroless
+# pattern as every other Dockerfile.<service> in this repo (see
+# Dockerfile.auth-service's own comment for the full "why distroless, not
+# alpine" reasoning): no shell, no package manager, not even libc — just
+# enough to run one static binary and resolve TLS certs (needed here for
+# real outbound HTTPS calls this binary makes that no other service does —
+# Google's OAuth token/userinfo endpoints, from auth-service's Google
+# OAuth flow, once GOOGLE_OAUTH_* env vars are set).
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/allinone ./cmd/allinone
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /out/allinone /allinone
+USER nonroot:nonroot
+
+# Only one port is ever meant to be reachable from outside this container:
+# the gateway's public HTTP/GraphQL/WebSocket port, read from $PORT at
+# runtime (Render's convention — see render.yaml). EXPOSE here documents
+# the dev-default (8080, matching every other phase's api-gateway
+# default) for `docker run -p`-style local testing; it has no effect on
+# Render, which injects its own PORT and routes to it regardless of
+# EXPOSE. The four backend gRPC ports (9001-9004) and each service's own
+# loopback health/JWKS HTTP ports (8081-8084) are deliberately NOT
+# exposed here — cmd/allinone/main.go binds every one of them to
+# 127.0.0.1, so nothing outside this container's own network namespace
+# could reach them even if a port were published, but not publishing them
+# at all is one more layer of "there is no ambiguity about what's
+# reachable" (see docs/DECISIONS.md's Phase 7 notes).
+EXPOSE 8080
+
+ENTRYPOINT ["/allinone"]

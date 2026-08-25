@@ -11,6 +11,7 @@ import (
 	"context"
 	"net/http"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,8 +29,16 @@ type CleanupFunc func(ctx context.Context) error
 // Every field is optional (nil/empty is fine) so a caller with, say, no
 // HTTP server at all doesn't need to fake one.
 type Options struct {
-	Logger      *zap.Logger
+	Logger *zap.Logger
+	// GRPCServer is the single-gRPC-server case every cmd/<service>/main.go
+	// uses. GRPCServers (below) is the multi-server case cmd/allinone/main.go
+	// needs — one process registering all four backend services' gRPC
+	// servers at once (see docs/DECISIONS.md's Phase 7 notes). Both may be
+	// set at once; every non-nil server across the two is stopped, so this
+	// stays a purely additive change for every existing single-server
+	// caller.
 	GRPCServer  *grpc.Server
+	GRPCServers []*grpc.Server
 	HTTPServers []*http.Server
 	Cleanups    []CleanupFunc
 	// Timeout bounds the whole shutdown sequence (HTTP server Shutdown +
@@ -63,10 +72,30 @@ func Wait(ctx context.Context, opts Options) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	grpcServers := opts.GRPCServers
 	if opts.GRPCServer != nil {
+		grpcServers = append([]*grpc.Server{opts.GRPCServer}, grpcServers...)
+	}
+	if len(grpcServers) > 0 {
+		// Every server's GracefulStop runs concurrently, not sequentially —
+		// cmd/allinone/main.go registers four of these (auth/skills/users/
+		// jobs, each on its own loopback port in one process), and stopping
+		// them one at a time would let a slow one alone eat the whole
+		// shutdownCtx budget before the next even started draining.
+		var wg sync.WaitGroup
+		for _, srv := range grpcServers {
+			if srv == nil {
+				continue
+			}
+			wg.Add(1)
+			go func(s *grpc.Server) {
+				defer wg.Done()
+				s.GracefulStop()
+			}(srv)
+		}
 		done := make(chan struct{})
 		go func() {
-			opts.GRPCServer.GracefulStop()
+			wg.Wait()
 			close(done)
 		}()
 		select {
@@ -75,7 +104,11 @@ func Wait(ctx context.Context, opts Options) {
 			if opts.Logger != nil {
 				opts.Logger.Warn("grpc graceful stop timed out, forcing stop")
 			}
-			opts.GRPCServer.Stop()
+			for _, srv := range grpcServers {
+				if srv != nil {
+					srv.Stop()
+				}
+			}
 		}
 	}
 
