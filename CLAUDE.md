@@ -28,6 +28,16 @@ cd backend && make lint
 - Each service/module has its own short README explaining what it does and why it's built that way — update it alongside the code, don't batch it at the end.
 - Nested `frontend/CLAUDE.md` and `backend/CLAUDE.md` hold stack-specific conventions; this file stays high-level.
 
+## Efficiency conventions for background agents (any part of this repo)
+
+Applies whether the work is backend, frontend, docker/k8s, or CI — not Go-specific:
+
+- **If resuming interrupted work, you were almost certainly resumed via `SendMessage` to your own prior instance, not spawned fresh** — trust the context you already have rather than re-reading the plan file, this CLAUDE.md, and `docs/DECISIONS.md` in full again "to be safe." A cold fresh-agent restart re-pays the full context cost every time; that was the single biggest source of wasted spend across early phases.
+- **Reserve full live end-to-end proof (spinning up the whole stack, a real browser, a hand-rolled protocol client, etc.) for the 1-2 things that are the actual architectural point of the current task.** Routine plumbing (a queue DLQ-routing one malformed message, a cache returning a hit, a form validating one bad input) is adequately proven by a solid unit/integration test — don't reach for full live infra for those. Phase 3.5 hand-rolling an entire `graphql-ws` protocol client to prove one subscription push is the example of this going too far.
+- Don't blindly re-run every earlier phase's full verification as a "regression check" — a targeted smoke test of the flows most likely to have been touched is enough; trust what previous phases already proved and committed.
+- Skip worktree isolation / full background-agent delegation for small, low-risk changes — just edit directly. Reserve it for genuinely large, self-contained chunks of work.
+- This is about cutting orchestration/testing overhead, **not** about writing less of the "why" documentation (`docs/DECISIONS.md`, per-service/per-module READMEs) — keep writing those exactly as thoroughly as before; that's the actual point of this project.
+
 ## Don't
 
 - Don't add a database-per-service via multiple Supabase projects — one instance, schema-per-service, per-service Postgres roles (see `docs/DECISIONS.md`).

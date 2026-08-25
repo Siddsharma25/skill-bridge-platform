@@ -77,36 +77,11 @@ Follow the pattern `auth-service` established:
 7. Add the service to `.golangci.yml`'s exclusions only if it has its own
    generated subpackage (most won't).
 
-## Efficiency conventions for whoever implements the next phase
+## Efficiency conventions
 
-Earlier phases spent 300-500K tokens each, mostly on cold-restarting after
-session interruptions and on live-verifying things that didn't need full
-live proof. If you are a background agent picking up a phase (or resuming
-one), follow these:
-
-- **If you're resuming interrupted work, you were almost certainly resumed
-  via `SendMessage` to your own prior instance, not spawned fresh** — trust
-  the context you already have rather than re-reading the plan file,
-  `backend/CLAUDE.md`, and `docs/DECISIONS.md` in full again "to be safe."
-- **Reserve full live end-to-end proof (spinning up the whole stack,
-  writing a throwaway protocol test client, etc.) for the 1-2 things that
-  are the actual architectural point of the phase** — e.g. Phase 2's "kill
-  users-service, confirm jobs-service still matches correctly from its own
-  snapshot" was worth proving live, because that's the whole justification
-  for the snapshot-projection design. Routine plumbing (a queue receiving
-  one malformed message and DLQ-routing it, a cache returning a hit on a
-  second call) is adequately proven by a solid unit/integration test —
-  don't reach for a full live stack + hand-rolled client for those. Phase
-  3.5 hand-rolling an entire `graphql-ws` protocol client to prove one
-  subscription push is the example of this going too far.
-- Don't blindly re-run every earlier phase's full verification as a
-  "regression check" — a targeted smoke test of the 2-3 flows most likely
-  to have been touched is enough; trust what previous phases already
-  proved and committed.
-- This is about cutting orchestration/testing overhead, not about writing
-  less of the "why" documentation (`docs/DECISIONS.md`, per-service
-  READMEs) — keep writing those exactly as thoroughly as before, that's
-  the actual point of this project.
+See the root `CLAUDE.md`'s "Efficiency conventions for background agents"
+section — it's project-wide (backend, frontend, docker/k8s, CI alike), not
+duplicated here to avoid the two copies drifting out of sync.
 
 ## Don't
 
