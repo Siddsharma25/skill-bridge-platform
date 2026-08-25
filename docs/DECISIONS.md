@@ -389,3 +389,265 @@ Brought up the throwaway local Postgres (reused an existing fully-migrated conta
 - **Zero regression on every earlier phase's flows**, reconfirmed live after this phase's changes: `register` → `login` → `myProfile` (lazy-create), `createSkill`, `createJob` with `requiredSkills`/`matches` resolving correctly through the dataloader and the Phase 2 matching worker — all via direct GraphQL calls against the live gateway, all succeeding with the exact shapes prior phases' notes describe. `notifications.email`'s RabbitMQ topology (queue + DLX + DLQ, with its dead-letter arguments) was confirmed unchanged and correctly declared via the RabbitMQ management API (`GET /api/queues/%2F`) — notification-service itself (unmodified this phase, NestJS, needs `npm install`) wasn't started live in this session to keep the verification loop fast, since no code path of its own changed and its own topology declaration is independently confirmed intact.
 - **Graceful shutdown, live, all five Go services together:** `SIGINT` to auth/skills/users/jobs/api-gateway simultaneously — auth-service, skills-service, users-service, and jobs-service each completed their full shutdown sequence in well under 100ms (jobs-service's three Kafka consumer groups included). api-gateway's shutdown took up to ~3 seconds (bounded by the `closeTimeout` fix above, when its RabbitMQ consumer's `Close()` hit the hang described above) — a small, bounded, and logged delay, not the indefinite hang this same scenario produced before the fix (confirmed by reproducing the pre-fix hang first, via `SIGQUIT`'s goroutine dump, then re-testing after the fix and confirming the bound holds). Confirmed separately that an api-gateway shutdown with **no** open subscription completes in ~3ms — the delay is specific to having had an active realtime consumer, not a general regression.
 - `go build/vet/test ./...`, `golangci-lint run ./...`, and `buf lint` all clean from `backend/` (`buf generate` also re-run — no diff, since no `.proto` file changed this phase). `gqlgen generate` re-run for the schema addition, with the documented resolver-regeneration hazard above fixed by hand as expected.
+
+## Phase 4 implementation notes
+
+Assembling everything built in Phases 1a–3.5 into one full local
+docker-compose stack: `docker/docker-compose.yml` (new) adds the 6
+application services on top of `docker/docker-compose.infra.yml`
+(unchanged in shape, one config fix below). This phase is integration
+only — no new application features, no k8s, no Jenkins.
+
+### DATABASE_URL: `docker/.env` + Compose variable substitution, not the `env_file:` keyword
+
+Schema-per-service means each of the 5 database-backed services needs its
+own distinct `DATABASE_URL` value (its own scoped Postgres role — see
+`migrations/000_bootstrap.sql`). Compose's `env_file:` keyword injects one
+file's keys verbatim into a container's environment and can't fan one
+`DATABASE_URL=...` line out into 5 different values, so `docker/.env`
+(gitignored; `docker/.env.example` committed) instead defines distinctly
+named variables (`AUTH_DATABASE_URL`, `SKILLS_DATABASE_URL`,
+`USERS_DATABASE_URL`, `JOBS_DATABASE_URL`, `NOTIFICATION_DATABASE_URL`)
+and each service in `docker-compose.yml` maps its own into the container's
+plain `DATABASE_URL` via `${...}` interpolation. Compose resolves `${...}`
+from whatever `--env-file` points at, which is why the documented
+invocation (`backend/Makefile`'s new `up-full`/`down-full`/`nuke-full`
+targets) passes `--env-file ../docker/.env` explicitly rather than relying
+on Compose's default project-directory `.env` lookup — that default is
+tied to the current working directory (`backend/`, per this project's
+existing invocation convention), not to where the compose files
+themselves live (`docker/`), so it wouldn't find the file without the
+explicit flag. `REDIS_URL`/`KAFKA_BROKERS`/`RABBITMQ_URL` are hardcoded
+directly in `docker-compose.yml`'s `environment:` blocks instead (not
+sourced from `docker/.env` at all) since they're not secrets and don't
+vary by environment the way a database credential does — only their
+*value* changes (service name instead of `localhost`), which the compose
+file itself is the right place to own.
+
+### The real finding: Kafka's advertised listener broke every containerized publish, silently and indefinitely
+
+This is the one genuine bug this phase's live verification surfaced, not
+just a packaging exercise. `docker-compose.infra.yml`'s Kafka service
+(unchanged since Phase 2) advertised a single listener as
+`localhost:9092` — correct for every earlier phase, where every Kafka
+client (backend services via `go run`, `kafka-topics.sh` from a shell
+inside the Kafka container) reached the broker either from the host's own
+network namespace or from inside that same container, both satisfied by
+one address.
+
+Phase 4 breaks that assumption: skills-service/users-service/jobs-service
+now run *as containers* on the compose network and need to reach Kafka by
+its service name (`kafka:9092`). The symptom, live: every `createSkill`
+call through the containerized gateway hung **indefinitely** — no
+timeout, no error, nothing logged by skills-service at all. Diagnosis
+(each step deliberately isolating one layer, since the absence of any
+error log ruled out the obvious causes first):
+
+1. Confirmed skills-service's `/healthz`/`/readyz` were fine and its
+   gRPC/Kafka/DB startup logs showed no error — the process was healthy,
+   just the RPC itself hung.
+2. Confirmed via direct SQL that the skill row **was** being inserted
+   into Postgres on every hung call — ruling out the database and
+   proving the hang was strictly after the primary write.
+3. Bypassed the gateway entirely with a `grpcurl` call straight to
+   `skills-service:9002` (via a throwaway container on the same compose
+   network) — still hung, ruling out anything gateway-side.
+4. Confirmed plain TCP reachability both host→container (`nc -zv
+   localhost 9002`) and container→container
+   (`docker exec sbp-notification-service nc -zv skills-service 9002`,
+   and separately `nc -zv kafka 9092`/`redis 6379`) — all open. Network
+   plumbing itself was fine.
+5. Confirmed the broker was genuinely healthy and accepting writes via
+   `kafka-console-producer.sh` run from a shell *inside* the Kafka
+   container — instant, no issue. The broker itself was not the problem.
+6. Confirmed `skill.updated` had auto-created successfully as a topic
+   (`kafka-topics.sh --list`/`--describe` showed it with a live leader
+   and ISR=[1]) — so a produce **had** succeeded at least once, ruling
+   out the previously-documented "first publish to a new topic" cold-start
+   cost (Phase 2's notes) as the cause of an indefinite hang specifically.
+
+That combination — write succeeds, broker healthy, topic exists, network
+open, yet every subsequent RPC still hangs forever — pointed at exactly
+one remaining thing: `internal/platform/kafka.Producer.Publish` calls
+`kgo.Client.ProduceSync(ctx, record)` synchronously (see
+`internal/platform/kafka/producer.go`), and a Kafka client's *seed*
+connection succeeding is not the same as its *actual* produce path
+working. franz-go's seed connection to `kafka:9092` (Docker DNS resolves
+the service name fine) succeeds, but the broker's first Metadata response
+— which tells the client which address to send the real Produce request
+to for that partition's leader — said `localhost:9092`, since that's
+literally what `KAFKA_ADVERTISED_LISTENERS` told it to say. Inside a
+container, `localhost:9092` resolves to that container itself, not Kafka.
+`ProduceSync` then retried against an address nothing was listening on,
+bounded only by the caller's own context deadline (none, from a plain
+`curl` with no `-m` flag — hence "indefinitely" in practice) rather than
+by any client- or broker-side error, which is exactly why nothing was
+ever logged: the retry loop itself never *failed*, it just never
+succeeded either.
+
+**Fix:** `docker-compose.infra.yml`'s Kafka service now advertises two
+listeners instead of one — `INTERNAL` (`kafka:9092`, for anything on the
+compose network) and `EXTERNAL` (`localhost:29092`, for a host process
+like `go run ./cmd/skills-service` outside Docker). The published host
+port moved from `9092:9092` to `29092:29092` accordingly (port 9092
+inside the container is now the INTERNAL listener's in-container port,
+never published). `backend/.env.example`'s `KAFKA_BROKERS` default moved
+from `localhost:9092` to `localhost:29092` to match — anyone still doing
+local host-based dev (`go run` directly, per `backend/README.md`, still a
+fully valid and probably more common workflow) needs to re-copy
+`.env.example` or update their existing `backend/.env`.
+`docker/docker-compose.yml`'s app services are unaffected — they already
+used `KAFKA_BROKERS=kafka:9092`, which is exactly the INTERNAL listener's
+now-correctly-advertised address. See `docker-compose.infra.yml`'s own
+comment on the `kafka:` service for the blow-by-blow. RabbitMQ has no
+advertised-address concept for AMQP (every client just dials
+`<host>:5672` directly), so it needed no equivalent split.
+
+Re-verified live after the fix: the exact same `createSkill` call that
+had hung indefinitely returned in well under a second, and the full
+cross-phase flow below passed cleanly on the first attempt afterward.
+
+### SIGTERM vs. SIGINT: already handled, no code change needed
+
+`docker compose down`/`docker stop` send `SIGTERM`, not `SIGINT` — a real
+and common Docker-specific gotcha the plan flagged as worth checking
+explicitly. Checked directly rather than assumed: `internal/platform/shutdown.Wait`
+already calls `signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)`
+(has, since Phase 1a — see that section's doc comment), and
+notification-service's `app.enableShutdownHooks()` (NestJS) listens for
+both signals by default too. No fix was needed here; this phase's
+contribution is *confirming* it live through actual containers rather
+than continuing to assume it from the source alone:
+
+- `docker stop -t 15` against all 6 app containers simultaneously
+  completed in under half a second total, all 6 exiting with code 0 (not
+  a `docker stop` fallback to `SIGKILL`, which would have taken the full
+  15s grace period and left a non-zero/signal-derived exit code).
+- Each of the 4 Go services' logs showed the same
+  `"shutdown signal received, starting graceful shutdown"` →
+  `"shutdown complete"` pair Phase 1b–3.5's live verification already
+  established, this time triggered by a container's `SIGTERM` rather
+  than a terminal's `SIGINT`.
+- notification-service logs no equivalent explicit line (NestJS's
+  shutdown hooks aren't instrumented with an app-level log statement the
+  way the Go side's `zap` calls are), so it was verified via external,
+  observable state instead: the RabbitMQ management API showed
+  `notifications.email`'s consumer count drop to `0` immediately after
+  the container stopped (a clean channel close/consumer cancel, not an
+  abruptly severed connection RabbitMQ would take longer to notice via
+  heartbeat timeout).
+- `jobs-service`'s three Kafka consumer groups
+  (`jobs-service.user-skill-snapshot`/`.matching-worker`/
+  `.cache-invalidator`) all showed `STATE: Empty`, `#MEMBERS: 0` via
+  `kafka-consumer-groups.sh --describe --state` immediately after
+  shutdown — a clean `LeaveGroup`, the same proof Phase 2's notes used
+  for `SIGINT`, now confirmed for a container's `SIGTERM` instead.
+
+### Why no app service has a Docker-level `HEALTHCHECK`
+
+All 4 Go services' final image stage is `gcr.io/distroless/static:nonroot`
+(no shell, no `curl`/`wget`, not even libc), so a `HEALTHCHECK` directive
+has nothing to execute inside the container without teaching the binary a
+new self-check mode — real application code, out of scope for a phase
+whose brief is packaging what already exists, not adding to it. All 6 app
+services remain externally checkable exactly as documented in each
+service's own README (`/healthz`/`/readyz` over HTTP, `grpcurl` reflection
+for the 4 Go services' gRPC surface) — see `docker/docker-compose.yml`'s
+own comment for the fuller reasoning, including why `api-gateway`'s
+`depends_on` against the other 4 Go services uses plain `service_started`
+rather than `service_healthy` (there is no health status to gate on, and
+every service already degrades gracefully when a peer isn't ready yet —
+the same reasoning `depends_on: condition: service_healthy` against
+Redis/Kafka/RabbitMQ exists to *reduce*, not eliminate, reliance on).
+
+### New Makefile targets
+
+`backend/Makefile` gained `up-full`/`down-full`/`nuke-full`, deliberately
+separate from the existing `up`/`down`/`nuke` (infra-only) rather than
+changing what those mean — local dev without Docker (`go run
+./cmd/<service>` directly, against `make up`'s infra-only stack) is still
+the faster, more common inner-loop workflow and shouldn't require a
+Docker image rebuild on every iteration. `up-full`/`down-full`/`nuke-full`
+build and run the full 6-service stack via
+`docker compose --env-file ../docker/.env -f ../docker/docker-compose.infra.yml
+-f ../docker/docker-compose.yml ...` — see the Makefile's own comment
+above each target.
+
+### Verification performed beyond `docker compose config`
+
+`docker compose -f docker/docker-compose.infra.yml -f
+docker/docker-compose.yml config` validated cleanly with no errors;
+manual inspection of its output confirmed the two files merge into one
+project sharing a single implicit default network (`docker_default`) —
+`docker-compose.infra.yml` declares named volumes but no top-level
+`networks:` block, so nothing conflicts — and that every `${...}`/service-name
+substitution resolved as intended.
+
+Brought up a throwaway `postgres:16-alpine` via a plain `docker run`
+(outside these compose files, per the plan), ran `000_bootstrap.sql` then
+all 5 services' goose migrations against it (via a disposable
+`golang:1.27-alpine` container, since no local Go toolchain exists in
+this environment — mirrors what every earlier phase's agent did),
+gave each service role a known password, and pointed `docker/.env`'s
+`*_DATABASE_URL` vars at it via `host.docker.internal` (Docker Desktop
+resolves this automatically; this is exactly why the throwaway Postgres
+stays outside the compose project rather than joining its network
+directly — a container reaching a `docker run` container's *published*
+host port is a different path than reaching another compose service by
+name).
+
+Brought the full stack up with `docker compose ... up -d --build` from a
+genuinely clean state (`docker ps` confirmed empty before starting; every
+container this session created was later torn down — see below). All 6
+app services plus Redis/Kafka/RabbitMQ came up and reported
+healthy/running (`/healthz` returned `{"status":"ok"}` on all 6 published
+HTTP ports; Redis/Kafka/RabbitMQ's own Compose healthchecks, already
+established since Phase 1a/2/3, all reported `healthy`).
+
+**Reproduced the full cross-phase flow entirely through the containerized
+stack** (not local `go run` processes) — the actual point of this phase:
+
+- `register` → `login` → `createSkill` → `addUserSkill` → `createJob` →
+  `myProfile`, all via `curl` against the containerized `api-gateway` at
+  `localhost:8080/query` (see the Kafka-hang finding above — this is the
+  flow that surfaced it, and the flow that then passed cleanly after the
+  fix).
+- **Kafka matching, live through containers:** after the fix, `addUserSkill`
+  → jobs-service's snapshot consumer logged `"updated user skill
+  snapshot"`; `createJob` requiring that skill → jobs-service's matching
+  worker logged `"processed job.posted event"` with `matched_users: 1`;
+  `job(id) { matches }` via GraphQL confirmed a `jobs.job_matches` row for
+  the expected user with `score: 1`.
+- **RabbitMQ welcome-email flow, live through containers:** confirmed via
+  direct SQL that each `register` call produced exactly one
+  `notifications.notification_log` row (`event_type: welcome`), matching
+  `message_id`s between auth-service's producer and
+  notification-service's consumer logs — the same cross-language proof
+  Phase 3's notes established, now through containers on both sides.
+- **RabbitMQ DLQ, live through containers:** published a deliberately
+  malformed message (`{not-valid-json`) directly to `notifications.email`
+  via the RabbitMQ management API; notification-service logged
+  `"malformed notifications.email message; routing to DLQ"`, the message
+  landed in `notifications.email.dlq` (queue depth 1, confirmed via the
+  management API), and a subsequent real `register` call immediately
+  after was still processed and inserted normally — the consumer survives
+  a poison message and keeps consuming, through containers.
+- **WebSocket `onNotification` push, live through containers:** rather
+  than re-running Phase 3.5's full `-tags live` Go test suite (already
+  merged and trusted; re-proving its correctness from first principles
+  isn't this phase's job), a small standalone Python `graphql-transport-ws`
+  client (stdlib `websockets`, no dependency on this codebase's own
+  transport code) opened an authenticated subscription against the
+  containerized gateway *before* `createJob`, then asserted a `next`
+  message carrying `{"type":"job_match", ...}` arrived within 30s. It did,
+  in under a second — the one thing this phase specifically needed to
+  confirm (the containerized RabbitMQ→Redis pub/sub bridge still works),
+  confirmed without re-deriving Phase 3.5's own correctness proof.
+- **Graceful shutdown on `SIGTERM`, through containers** — see the
+  dedicated section above.
+
+**Torn down completely afterward, not left running**: `docker compose ...
+down -v` (removed all 6 app containers, all 3 infra containers, all 3
+named volumes, and the shared network), then the throwaway Postgres and
+migration containers removed directly (`docker rm -f`). `docker ps -a`
+and `docker network ls` confirmed nothing from this session remained.

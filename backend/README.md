@@ -49,7 +49,8 @@ runtime by a client guessing a JSON shape.
 ```
 make setup       # verify toolchain versions, install buf's local plugins
 make gen         # regenerate gRPC/gqlgen stubs after editing a .proto or .graphqls file
-make up/down/nuke  # local infra (Redis for now) lifecycle
+make up/down/nuke  # local infra (Redis + Kafka + RabbitMQ) lifecycle
+make up-full/down-full/nuke-full  # Phase 4: infra + all 6 app services via Docker (see below)
 make test
 make lint
 ```
@@ -70,6 +71,32 @@ live Supabase project yet at this phase) — they still start and serve
 health checks, just report `/readyz` as not-ready and return `Unavailable`
 from any RPC that needs a database.
 
+## Running the full stack via Docker (Phase 4)
+
+`docker/docker-compose.yml` builds and runs all 6 application services
+(auth/skills/users/jobs/api-gateway, notification-service) on top of
+`docker/docker-compose.infra.yml`'s Redis/Kafka/RabbitMQ — a clean
+checkout reproducing the entire cross-phase flow via containers alone,
+with no `go run`/`npm run` processes involved:
+
+```
+cp ../docker/.env.example ../docker/.env   # then fill in real DATABASE_URL values
+make up-full     # builds + starts everything, waits on infra healthchecks
+make down-full   # stops everything
+make nuke-full   # stops everything and drops volumes
+```
+
+`docker/.env` supplies each of the 5 database-backed services' own scoped
+`DATABASE_URL` (schema-per-service, so each needs a distinct value — see
+`docker/docker-compose.yml`'s header comment and `docs/DECISIONS.md`'s
+Phase 4 notes) plus optional secrets (JWT signing key, Google OAuth, rate
+limit tuning); it's gitignored and never committed — only
+`docker/.env.example` is. There is still no local Postgres service in
+either compose file by design (single shared Supabase instance via
+`DATABASE_URL`, not a container-per-service database) — `docker/.env.example`
+documents how to point at a throwaway local `postgres:16-alpine` container
+for local verification instead of real Supabase.
+
 ## Ports (dev defaults)
 
 | Service | gRPC | HTTP (health/JWKS/GraphQL) |
@@ -79,6 +106,7 @@ from any RPC that needs a database.
 | users-service | 9003 | 8083 |
 | jobs-service | 9004 | 8084 |
 | api-gateway | — | 8080 |
+| notification-service | — | 8085 |
 
 ## Conventions
 
