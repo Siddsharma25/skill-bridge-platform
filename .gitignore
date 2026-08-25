@@ -14,6 +14,7 @@ backend/tmp/
 # --- notification-service (Node/NestJS) ---
 backend/notification-service/node_modules
 backend/notification-service/dist
+backend/notification-service/coverage
 
 # --- Env files (never commit secrets; .env.example files stay tracked) ---
 **/.env
