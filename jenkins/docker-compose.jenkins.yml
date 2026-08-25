@@ -1,0 +1,96 @@
+# jenkins/docker-compose.jenkins.yml
+#
+# Phase 6: a local, disposable Jenkins controller for build-only practice
+# (checkout -> test -> docker build). This does not gate anything real —
+# GitHub Actions (.github/workflows/backend-ci.yml / frontend-ci.yml)
+# remains the only pipeline a merge actually depends on. See
+# jenkins/README.md and docs/DECISIONS.md's "Phase 6 implementation notes".
+#
+# Usage (from the repo root):
+#
+#   docker compose -f jenkins/docker-compose.jenkins.yml up -d --build
+#
+# then open http://localhost:8090 (admin / admin by default — see
+# JENKINS_ADMIN_PASSWORD below and jenkins/README.md's security note). The
+# single pipeline job ("skill-bridge-backend-practice") is already
+# provisioned via Configuration as Code + the Job DSL plugin at startup —
+# no manual "New Item" click-through. See jenkins/README.md for whether it
+# needs one manual "Build Now" or triggers on its own.
+#
+# Tear down (per this project's established "leave nothing running"
+# pattern from every prior phase):
+#
+#   docker compose -f jenkins/docker-compose.jenkins.yml down -v
+#
+# --- Docker-in-Docker via the host socket, not a nested daemon ---
+# The controller mounts the HOST's own /var/run/docker.sock — the
+# standard single-host pattern for a Jenkins-in-Docker setup. Every
+# `docker build` / `docker.image(...).inside{}` this pipeline runs is
+# actually executed by the HOST'S docker daemon (there is no second,
+# nested dockerd anywhere here); images this pipeline builds land in the
+# very same `docker images` list a plain host-side `docker build` would
+# populate. jenkins_home is a NAMED volume, not a host bind mount,
+# specifically because the Docker Pipeline plugin already knows how to
+# translate a named-volume-backed workspace path into the correct
+# host-visible source when it composes a nested `docker run -v` for
+# `docker.image().inside{}` (it inspects its own running container's
+# mounts via the Docker API to do this) — this is the standard, documented
+# reason container-per-stage works out of the box here with no manual
+# host/container path matching required.
+#
+# --- Local SCM: a bind-mounted .git object store, not a GitHub remote ---
+# This project has never been pushed anywhere (see root CLAUDE.md), so the
+# Jenkinsfile's Checkout stage clones from a `file://` URL against the
+# repo's REAL .git directory (bind-mounted read-only below as
+# /workspace/repo.git), not a working-tree copy. Cloning from the real
+# object store gives a genuine, repeatable git checkout of whatever branch
+# REPO_BRANCH names, independent of whatever any particular working tree
+# looks like on disk — see docs/DECISIONS.md's Phase 6 notes for why a
+# bind-mounted working tree alone doesn't reliably work as a git `file://`
+# source here (a linked git worktree's .git is a one-line pointer file to
+# metadata that lives elsewhere on the host, unresolvable from inside a
+# container that only has the working tree itself mounted).
+#
+# A SEPARATE, plain working-tree bind mount (/workspace/repo, also below)
+# is used only once, at Jenkins startup, so the Job DSL seed script can
+# read the current text of jenkins/Jenkinsfile off disk and bake it into
+# the provisioned job — see jenkins/casc/jobs/seed.groovy.
+#
+# --- REPO_BRANCH / JENKINS_REPO_GIT_DIR defaults ---
+# Both default to the ordinary case: a plain, non-worktree checkout of
+# this repo, building its `main` branch. Override either at `docker
+# compose up` time (e.g. `REPO_BRANCH=some-branch docker compose -f
+# jenkins/docker-compose.jenkins.yml up -d --build`) — this phase's own
+# verification run did exactly that, since it was built from inside a
+# linked worktree rather than the main checkout; see docs/DECISIONS.md.
+services:
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile.jenkins
+    container_name: sbp-jenkins
+    ports:
+      - "8090:8080"
+    environment:
+      CASC_JENKINS_CONFIG: /usr/share/jenkins/ref/casc_configs/jenkins.yaml
+      # ALLOW_LOCAL_CHECKOUT: the git plugin refuses a `file://` remote
+      # pointing at a local directory by default (a hardening measure —
+      # an untrusted repo URL pointing at a controller-local path could
+      # otherwise be used to read arbitrary files off the controller).
+      # Discovered live: the Checkout stage failed immediately with
+      # "aborted because it references a local directory, which may be
+      # insecure" until this was set. Safe to opt into here specifically
+      # because /workspace/repo.git is a bind mount THIS compose file
+      # controls, not an attacker-supplied URL.
+      JAVA_OPTS: -Djenkins.install.runSetupWizard=false -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:-admin}
+      REPO_BRANCH: ${REPO_BRANCH:-main}
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../:/workspace/repo:ro
+      - ${JENKINS_REPO_GIT_DIR:-../.git}:/workspace/repo.git:ro
+    restart: unless-stopped
+
+volumes:
+  jenkins_home:

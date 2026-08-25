@@ -1,0 +1,63 @@
+# jenkins/Dockerfile.jenkins — a local, disposable Jenkins controller image
+# for Phase 6 practice (build-only: checkout -> test -> docker build). This
+# is NOT a general-purpose Jenkins agent image: the pipeline's Test/Build
+# work happens inside short-lived per-stage containers (golang:1.27,
+# node:22-alpine) spun up via the Docker Pipeline plugin, not baked into
+# this image — see jenkins/README.md for why container-per-stage was
+# chosen here over a custom agent image with Go/Node/buf/golangci-lint
+# preinstalled.
+#
+# Floating LTS+JDK17 tag, not a fully pinned point release: this project
+# otherwise prefers pinned versions (golangci-lint v2.13.1, buf 1.72.0
+# below, matching backend-ci.yml exactly), but the exact current LTS point
+# release number drifts too fast to hardcode reliably from outside a live
+# check — see docs/DECISIONS.md's Phase 6 notes for the version this was
+# actually verified against and the same category of drift Phase 5 hit
+# with Strimzi's `latest` install URL.
+FROM jenkins/jenkins:lts-jdk17
+
+USER root
+
+# git: the git plugin's default (non-JGit) implementation shells out to a
+# real `git` binary to run the Checkout stage's `file://` clone.
+# docker-ce-cli (client only, no dockerd): every `docker build` /
+# `docker.image(...).inside{}` this pipeline runs talks to the HOST's own
+# daemon over the bind-mounted socket (see docker-compose.jenkins.yml) —
+# there is no second, nested daemon anywhere in this setup, so only the
+# CLI binary is needed in this image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates curl gnupg \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY plugins.txt /usr/share/jenkins/ref/plugins.txt
+RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
+
+# Baked in under /usr/share/jenkins/ref/, which is OUTSIDE the
+# /var/jenkins_home volume mount on purpose: anything placed directly
+# under /var/jenkins_home in this Dockerfile would only ever populate a
+# brand-new, empty named volume on its very first mount (standard Docker
+# behavior for named volumes) and would then be silently ignored on every
+# later `docker compose build` once the volume already exists and
+# persists — meaning a change to jenkins.yaml/seed.groovy could look like
+# it had no effect after the first run. Keeping CASC config here and
+# pointing CASC_JENKINS_CONFIG at this exact path (see
+# docker-compose.jenkins.yml) means every rebuild picks up the latest
+# config regardless of what's already in the jenkins_home volume.
+COPY casc/ /usr/share/jenkins/ref/casc_configs/
+
+# Running as root, not the image's default `jenkins` user: the `jenkins`
+# user's uid (1000) has no matching group membership for the host-owned
+# /var/run/docker.sock bind-mounted below (its host GID varies by Docker
+# Desktop version and isn't something worth chasing down for a sandbox
+# that's never exposed beyond localhost) — the socket mount already grants
+# root-equivalent host access regardless of which uid issues `docker`
+# calls, so this doesn't add a real new privilege boundary here. Not a
+# pattern to copy for anything actually exposed to a network.
+USER root

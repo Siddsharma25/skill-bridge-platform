@@ -1,0 +1,48 @@
+# jenkins/casc/jenkins.yaml — Configuration as Code for the Phase 6
+# practice Jenkins controller. Baked into the image at
+# /usr/share/jenkins/ref/casc_configs/jenkins.yaml (see Dockerfile.jenkins)
+# and pointed at via CASC_JENKINS_CONFIG (see docker-compose.jenkins.yml) —
+# applied automatically on every container start, no manual System
+# Configuration screen involved.
+#
+# Security: a single local admin/admin account (override the password via
+# JENKINS_ADMIN_PASSWORD — see docker-compose.jenkins.yml), with anonymous
+# READ access so the REST API's GET endpoints (job config, build status,
+# console log) work without credentials for read-only verification, while
+# any state-changing call (triggering a build) still requires the admin
+# credential + a CSRF crumb. This is deliberately simple, not
+# production-grade auth — this Jenkins is never exposed beyond localhost
+# (see docker-compose.jenkins.yml's port mapping and jenkins/README.md) and
+# gates nothing real; a publicly reachable Jenkins would need a real user
+# store, HTTPS, and a non-default admin password at minimum.
+#
+# `loggedInUsersCanDoAnything` MUST be an explicit mapping (`{}`), not a
+# bare boolean and not a mapping with an `anonymousRead:` key — both were
+# tried live and crash-looped the controller on every boot
+# (`UnknownAttributesException` for the latter, `Item isn't a Mapping` for
+# the former; see docs/DECISIONS.md's Phase 6 notes for the full
+# diagnosis). Anonymous read on this strategy comes from its own defaults,
+# not a JCasC attribute — confirmed working (`curl` with no credentials
+# against `/api/json` returns 200) with the empty-mapping form below.
+jenkins:
+  systemMessage: >
+    Phase 6 practice Jenkins (skill-bridge-platform). Build-only sandbox —
+    checkout -> test -> docker build, no deploy stage, nothing here gates
+    a real merge. See jenkins/README.md and docs/DECISIONS.md's Phase 6
+    implementation notes.
+  numExecutors: 2
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD:-admin}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything: {}
+
+# Job DSL's Configuration as Code integration: runs this script once at
+# startup (and again on any config reload) to provision the single
+# pipeline job declaratively — this is the mechanism that replaces
+# clicking through Jenkins's "New Item" wizard. See jobs/seed.groovy.
+jobs:
+  - file: /usr/share/jenkins/ref/casc_configs/jobs/seed.groovy

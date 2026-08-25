@@ -1,0 +1,139 @@
+// jenkins/Jenkinsfile — Phase 6 practice pipeline: checkout -> test ->
+// docker build. Explicitly build-only, no deploy stage — the deploy-to-
+// kind step was already exercised by hand in Phase 5 and re-adding it
+// here would duplicate that work for no new learning value (see the
+// plan's Phase 6 bullet and docs/DECISIONS.md). GitHub Actions
+// (.github/workflows/backend-ci.yml / frontend-ci.yml) remains the only
+// pipeline that actually gates a merge; this one gates nothing.
+//
+// Container-per-stage, not a custom Jenkins agent image: the controller
+// (see docker-compose.jenkins.yml / Dockerfile.jenkins) only carries git
+// and the docker CLI. Go, Node, buf, and golangci-lint all run inside
+// short-lived containers spun up here via the Docker Pipeline plugin
+// (docker.image(...).inside{}) instead — simpler to get right on a
+// single local host than hand-building and version-syncing a custom
+// agent image against backend-ci.yml's pinned tool versions. See
+// jenkins/README.md for the fuller trade-off writeup.
+//
+// Exactly three top-level stages, per the plan: Checkout, Test, Build.
+// Test covers both the Go side and notification-service (NestJS) inside
+// one stage via two sequential docker.image(...).inside{} blocks, rather
+// than being split into more top-level stages — this mirrors what the
+// plan's Phase 6 bullet and backend-ci.yml already established as "the
+// Test step," just executed through two tool containers instead of one
+// GitHub Actions runner that happens to have both preinstalled.
+pipeline {
+    agent any
+
+    options {
+        // No timestamps() here: that option is provided by the
+        // Timestamper plugin, which this deliberately minimal plugin set
+        // (see plugins.txt) doesn't install — timestamped log lines
+        // aren't essential to what this phase is actually proving
+        // (checkout/test/build succeeding), so the plugin wasn't added
+        // just for that. Discovered live: the pipeline failed its
+        // Groovy-compile step outright with "Invalid option type
+        // 'timestamps'" the first time this ran with Timestamper absent.
+        timeout(time: 20, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        // Pinned to match .github/workflows/backend-ci.yml exactly — see
+        // that file's own `golangci-lint-action` / `buf-setup-action`
+        // version pins. Keeping these two in sync by hand (rather than
+        // inventing new versions here) is the actual point of "reuse
+        // this project's existing patterns," per the plan.
+        GOLANGCI_LINT_VERSION = 'v2.13.1'
+        BUF_VERSION           = '1.72.0'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                deleteDir()
+                // Clones from the repo's real .git object store (bind-
+                // mounted read-only at /workspace/repo.git — see
+                // docker-compose.jenkins.yml), not a working-tree copy:
+                // this is what makes the Checkout stage a genuine,
+                // repeatable git operation rather than "the files were
+                // already there." REPO_BRANCH defaults to 'main' (see
+                // docker-compose.jenkins.yml's environment block) and is
+                // overridable per docker compose invocation — e.g. this
+                // phase's own verification run built off a development
+                // worktree branch rather than main; see
+                // docs/DECISIONS.md's Phase 6 notes.
+                git(
+                    url: 'file:///workspace/repo.git',
+                    branch: (env.REPO_BRANCH ?: 'main')
+                )
+            }
+        }
+
+        stage('Test') {
+            steps {
+                script {
+                    docker.image('golang:1.27').inside {
+                        dir('backend') {
+                            sh 'go build ./...'
+                            sh 'go vet ./...'
+                            sh 'go test ./...'
+                            // `go install` of the released module, not the
+                            // project's own curl | sh install.sh recipe:
+                            // discovered live, that script's checksum
+                            // verification failed against the actual
+                            // downloaded linux/arm64 v2.13.1 tarball
+                            // (a real mismatch between the script's
+                            // embedded checksum manifest and GitHub's
+                            // release asset, not a corrupted download —
+                            // reproduced twice). `go install` fetches the
+                            // same tagged source and verifies it via the
+                            // Go module checksum database instead, which
+                            // this container has zero issues with.
+                            sh '''
+                                set -eu
+                                go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+                                "$(go env GOPATH)/bin/golangci-lint" run ./...
+                            '''
+                            sh '''
+                                set -eu
+                                curl -sSL "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-$(uname -s)-$(uname -m)" \
+                                    -o /usr/local/bin/buf
+                                chmod +x /usr/local/bin/buf
+                                buf --version
+                                buf lint
+                            '''
+                        }
+                    }
+                    docker.image('node:22-alpine').inside {
+                        dir('backend/notification-service') {
+                            sh 'npm ci'
+                            sh 'npm run lint'
+                            sh 'npm test'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                // No push anywhere — no registry is configured for this
+                // sandbox and there's nowhere to push to (see the plan's
+                // Phase 6 bullet). This stage only proves all 6 images
+                // build cleanly from Jenkins, tagged :jenkins so they're
+                // easy to tell apart from any other locally built tag
+                // (docker-compose.yml's app images, kind-load's :kind
+                // tag from Phase 5) in `docker images` afterward.
+                dir('backend') {
+                    sh 'docker build -t skill-bridge/auth-service:jenkins -f Dockerfile.auth-service .'
+                    sh 'docker build -t skill-bridge/skills-service:jenkins -f Dockerfile.skills-service .'
+                    sh 'docker build -t skill-bridge/users-service:jenkins -f Dockerfile.users-service .'
+                    sh 'docker build -t skill-bridge/jobs-service:jenkins -f Dockerfile.jobs-service .'
+                    sh 'docker build -t skill-bridge/api-gateway:jenkins -f Dockerfile.api-gateway .'
+                    sh 'docker build -t skill-bridge/notification-service:jenkins notification-service'
+                }
+            }
+        }
+    }
+}

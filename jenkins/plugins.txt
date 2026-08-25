@@ -1,0 +1,27 @@
+# Unversioned plugin IDs — jenkins-plugin-cli resolves the latest version
+# compatible with this image's Jenkins core version (see Dockerfile.jenkins)
+# and its own transitive dependency tree, rather than pinning every plugin
+# by hand for a local practice sandbox. If a plugin API break is ever hit
+# on a rebuild, pin the specific working version discovered at that point
+# (docs/DECISIONS.md's Phase 6 notes record what actually resolved as of
+# this phase's verification).
+
+# Configuration as Code: declarative jenkins.yaml -> live config, no
+# manual System Configuration screen clicking.
+configuration-as-code
+
+# Job DSL: lets configuration-as-code's `jobs:` section provision the
+# single pipeline job below from a Groovy script instead of "New Item".
+job-dsl
+
+# git: the Checkout stage's `git url: 'file://...', branch: ...` step.
+git
+
+# Declarative Pipeline (`pipeline { ... }` syntax) plus the classic
+# Pipeline: Groovy/SCM/basic-steps bundle it depends on.
+workflow-aggregator
+pipeline-model-definition
+
+# Docker Pipeline: `docker.image(...).inside { ... }` for container-per-
+# stage execution against the host's docker socket.
+docker-workflow
