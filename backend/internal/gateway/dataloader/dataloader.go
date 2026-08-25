@@ -23,6 +23,7 @@ import (
 	dl "github.com/graph-gophers/dataloader/v7"
 
 	skillsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1"
+	usersv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/model"
 )
 
@@ -45,6 +46,7 @@ const waitWindow = 2 * time.Millisecond
 // specifically calls out to avoid.
 type Loaders struct {
 	SkillByID *loaderT
+	UserByID  *userLoaderT
 }
 
 // loaderT is the concrete Loader type this package hands out for
@@ -54,6 +56,10 @@ type Loaders struct {
 // via newBatchedLoaderForTest below, without duplicating the BatchFunc/
 // wait-window wiring in the test.
 type loaderT = dl.Loader[string, *model.Skill]
+
+// userLoaderT is UserByID's concrete Loader type — same naming reasoning
+// as loaderT above.
+type userLoaderT = dl.Loader[string, *model.Profile]
 
 type contextKey struct{}
 
@@ -76,10 +82,13 @@ func FromContext(ctx context.Context) *Loaders {
 // stores it in the request context, wrapping the GraphQL handler the same
 // way authctx.Middleware and ratelimit.Middleware do (see
 // cmd/api-gateway/main.go for the composition order).
-func Middleware(skillsClient skillsv1.SkillsServiceClient) func(http.Handler) http.Handler {
+func Middleware(skillsClient skillsv1.SkillsServiceClient, usersClient usersv1.UsersServiceClient) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			loaders := &Loaders{SkillByID: newSkillByIDLoader(skillsClient)}
+			loaders := &Loaders{
+				SkillByID: newSkillByIDLoader(skillsClient),
+				UserByID:  newUserByIDLoader(usersClient),
+			}
 			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), loaders)))
 		})
 	}
@@ -129,6 +138,50 @@ func batchGetSkillsByID(client skillsv1.SkillsServiceClient) dl.BatchFunc[string
 
 		for i, id := range ids {
 			results[i] = &dl.Result[*model.Skill]{Data: bySkillID[id]}
+		}
+		return results
+	}
+}
+
+// newUserByIDLoader constructs the UserByID loader Middleware attaches to
+// every request's context: batchGetProfilesByID as its BatchFunc, the same
+// waitWindow as SkillByID.
+func newUserByIDLoader(usersClient usersv1.UsersServiceClient) *userLoaderT {
+	return dl.NewBatchedLoader(
+		batchGetProfilesByID(usersClient),
+		dl.WithWait[string, *model.Profile](waitWindow),
+	)
+}
+
+// batchGetProfilesByID is the BatchFunc every UserByID.Load(ctx, id) call
+// feeds into: one GetProfilesByIds call carrying every distinct user_id
+// the Loader collected during its wait window — e.g. every JobMatch.userId
+// across a job's match list. A dangling id with no matching profile (or
+// simply no profile row created yet) resolves to a nil *model.Profile, not
+// an error, mirroring batchGetSkillsByID's "silently omit" contract.
+func batchGetProfilesByID(client usersv1.UsersServiceClient) dl.BatchFunc[string, *model.Profile] {
+	return func(ctx context.Context, ids []string) []*dl.Result[*model.Profile] {
+		results := make([]*dl.Result[*model.Profile], len(ids))
+
+		resp, err := client.GetProfilesByIds(ctx, &usersv1.GetProfilesByIdsRequest{UserIds: ids})
+		if err != nil {
+			for i := range results {
+				results[i] = &dl.Result[*model.Profile]{Error: err}
+			}
+			return results
+		}
+
+		byUserID := make(map[string]*model.Profile, len(resp.GetProfiles()))
+		for _, p := range resp.GetProfiles() {
+			byUserID[p.GetUserId()] = &model.Profile{
+				UserID:      p.GetUserId(),
+				DisplayName: p.GetDisplayName(),
+				Bio:         p.GetBio(),
+			}
+		}
+
+		for i, id := range ids {
+			results[i] = &dl.Result[*model.Profile]{Data: byUserID[id]}
 		}
 		return results
 	}

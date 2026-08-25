@@ -11,6 +11,13 @@ type JobMatch struct {
 	UserID    string  `json:"userId"`
 	Score     float64 `json:"score"`
 	MatchedAt string  `json:"matchedAt"`
+	// The matched user's display name, resolved from users-service via the
+	// gateway's UserByID dataloader (batches every distinct userId across a
+	// job's match list into one GetProfilesByIds call — see
+	// internal/gateway/dataloader). Falls back to userId itself if the user
+	// hasn't set a display name yet (or has no profile row at all), so the UI
+	// always has *something* human-scannable to show instead of a bare UUID.
+	DisplayName string `json:"displayName"`
 }
 
 type Mutation struct {

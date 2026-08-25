@@ -266,6 +266,54 @@ func (s *Server) getOrCreateProfile(ctx context.Context, userID string) (*Profil
 	return &profile, nil
 }
 
+// GetProfilesByIds returns every profile matching one of userIDs (any id
+// with no matching row is silently omitted, not an error) — a read-only
+// batch lookup, unlike GetProfile/UpdateProfile, so calling it never
+// creates a row for a dangling/unrecognized id. Mirrors skills-service's
+// GetSkillsByIds; see users.proto for why this exists (the gateway's
+// dataloader batches every distinct user_id a response needs a display
+// name for, e.g. JobMatch.displayName, into one call).
+func (s *Server) GetProfilesByIds(ctx context.Context, req *usersv1.GetProfilesByIdsRequest) (*usersv1.GetProfilesByIdsResponse, error) {
+	log := logger.FromContext(ctx, s.log)
+
+	ids := dedupeNonEmpty(req.GetUserIds())
+	if len(ids) == 0 {
+		return &usersv1.GetProfilesByIdsResponse{}, nil
+	}
+	if s.db == nil {
+		return nil, status.Error(codes.Unavailable, "database is not configured on this instance")
+	}
+
+	var rows []Profile
+	if err := s.db.WithContext(ctx).Where("user_id IN ?", ids).Find(&rows).Error; err != nil {
+		log.Error("failed to get profiles by ids", zap.Error(err))
+		return nil, status.Error(codes.Internal, "failed to get profiles")
+	}
+
+	out := make([]*usersv1.Profile, 0, len(rows))
+	for i := range rows {
+		out = append(out, toProfileProto(&rows[i]))
+	}
+	return &usersv1.GetProfilesByIdsResponse{Profiles: out}, nil
+}
+
+func dedupeNonEmpty(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 func toProfileProto(p *Profile) *usersv1.Profile {
 	return &usersv1.Profile{
 		UserId:      p.UserID,

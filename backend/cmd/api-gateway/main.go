@@ -21,6 +21,7 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler/lru"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/99designs/gqlgen/graphql/playground"
+	coderws "github.com/coder/websocket"
 	"github.com/joho/godotenv"
 	"github.com/vektah/gqlparser/v2/ast"
 	"go.uber.org/zap"
@@ -202,6 +203,24 @@ func main() {
 		// Authorization-header path.
 		InitFunc:              wsInitFunc(jwksClient, log),
 		KeepAlivePingInterval: 10 * time.Second,
+		// gqlgen's default WebsocketImplementation (coder/websocket) has
+		// its own Origin check independent of cors.Middleware above (that
+		// middleware only ever runs on the HTTP request that *becomes* the
+		// WS connection — coder/websocket's Accept does its own check
+		// before handing back to gqlgen at all). Left at its zero value,
+		// OriginPatterns is empty and coder/websocket rejects every
+		// cross-origin upgrade outright (same-origin only), which is why
+		// a real browser's `onNotification` subscription from Vite's dev
+		// origin failed with "Origin ... is not authorized for Host ..."
+		// while every plain HTTP query/mutation from that same origin
+		// worked fine through cors.Middleware. Reusing allowedOrigins here
+		// (each entry already scheme://host, matching what
+		// authenticateOrigin compares against when a pattern contains
+		// "://") keeps one source of truth for "which frontend origins
+		// this gateway trusts" instead of a second hardcoded list.
+		Implementation: transport.CoderWebsocketImplementation{
+			AcceptOptions: coderws.AcceptOptions{OriginPatterns: allowedOrigins},
+		},
 	})
 	srv.AddTransport(transport.Options{})
 	srv.AddTransport(transport.GET{})
@@ -253,7 +272,7 @@ func main() {
 	//  4. srv — the actual GraphQL execution.
 	mux.Handle("/query", authctx.Middleware(jwksClient, log)(
 		ratelimit.Middleware(redisClient, rateLimitCfg, log)(
-			dataloader.Middleware(skillsClient)(srv),
+			dataloader.Middleware(skillsClient, usersClient)(srv),
 		),
 	))
 

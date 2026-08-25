@@ -521,6 +521,94 @@ func (x *ListUserSkillsResponse) GetUserSkills() []*UserSkill {
 	return nil
 }
 
+type GetProfilesByIdsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserIds       []string               `protobuf:"bytes,1,rep,name=user_ids,json=userIds,proto3" json:"user_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProfilesByIdsRequest) Reset() {
+	*x = GetProfilesByIdsRequest{}
+	mi := &file_users_v1_users_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProfilesByIdsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProfilesByIdsRequest) ProtoMessage() {}
+
+func (x *GetProfilesByIdsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_users_v1_users_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProfilesByIdsRequest.ProtoReflect.Descriptor instead.
+func (*GetProfilesByIdsRequest) Descriptor() ([]byte, []int) {
+	return file_users_v1_users_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GetProfilesByIdsRequest) GetUserIds() []string {
+	if x != nil {
+		return x.UserIds
+	}
+	return nil
+}
+
+type GetProfilesByIdsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profiles      []*Profile             `protobuf:"bytes,1,rep,name=profiles,proto3" json:"profiles,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProfilesByIdsResponse) Reset() {
+	*x = GetProfilesByIdsResponse{}
+	mi := &file_users_v1_users_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProfilesByIdsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProfilesByIdsResponse) ProtoMessage() {}
+
+func (x *GetProfilesByIdsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_users_v1_users_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProfilesByIdsResponse.ProtoReflect.Descriptor instead.
+func (*GetProfilesByIdsResponse) Descriptor() ([]byte, []int) {
+	return file_users_v1_users_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetProfilesByIdsResponse) GetProfiles() []*Profile {
+	if x != nil {
+		return x.Profiles
+	}
+	return nil
+}
+
 var File_users_v1_users_proto protoreflect.FileDescriptor
 
 const file_users_v1_users_proto_rawDesc = "" +
@@ -554,13 +642,18 @@ const file_users_v1_users_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\"N\n" +
 	"\x16ListUserSkillsResponse\x124\n" +
 	"\vuser_skills\x18\x01 \x03(\v2\x13.users.v1.UserSkillR\n" +
-	"userSkills2\xcd\x02\n" +
+	"userSkills\"4\n" +
+	"\x17GetProfilesByIdsRequest\x12\x19\n" +
+	"\buser_ids\x18\x01 \x03(\tR\auserIds\"I\n" +
+	"\x18GetProfilesByIdsResponse\x12-\n" +
+	"\bprofiles\x18\x01 \x03(\v2\x11.users.v1.ProfileR\bprofiles2\xa8\x03\n" +
 	"\fUsersService\x12G\n" +
 	"\n" +
 	"GetProfile\x12\x1b.users.v1.GetProfileRequest\x1a\x1c.users.v1.GetProfileResponse\x12P\n" +
 	"\rUpdateProfile\x12\x1e.users.v1.UpdateProfileRequest\x1a\x1f.users.v1.UpdateProfileResponse\x12M\n" +
 	"\fAddUserSkill\x12\x1d.users.v1.AddUserSkillRequest\x1a\x1e.users.v1.AddUserSkillResponse\x12S\n" +
-	"\x0eListUserSkills\x12\x1f.users.v1.ListUserSkillsRequest\x1a .users.v1.ListUserSkillsResponseB\xa7\x01\n" +
+	"\x0eListUserSkills\x12\x1f.users.v1.ListUserSkillsRequest\x1a .users.v1.ListUserSkillsResponse\x12Y\n" +
+	"\x10GetProfilesByIds\x12!.users.v1.GetProfilesByIdsRequest\x1a\".users.v1.GetProfilesByIdsResponseB\xa7\x01\n" +
 	"\fcom.users.v1B\n" +
 	"UsersProtoP\x01ZJgithub.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1;usersv1\xa2\x02\x03UXX\xaa\x02\bUsers.V1\xca\x02\bUsers\\V1\xe2\x02\x14Users\\V1\\GPBMetadata\xea\x02\tUsers::V1b\x06proto3"
 
@@ -576,36 +669,41 @@ func file_users_v1_users_proto_rawDescGZIP() []byte {
 	return file_users_v1_users_proto_rawDescData
 }
 
-var file_users_v1_users_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_users_v1_users_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_users_v1_users_proto_goTypes = []any{
-	(*Profile)(nil),                // 0: users.v1.Profile
-	(*GetProfileRequest)(nil),      // 1: users.v1.GetProfileRequest
-	(*GetProfileResponse)(nil),     // 2: users.v1.GetProfileResponse
-	(*UpdateProfileRequest)(nil),   // 3: users.v1.UpdateProfileRequest
-	(*UpdateProfileResponse)(nil),  // 4: users.v1.UpdateProfileResponse
-	(*UserSkill)(nil),              // 5: users.v1.UserSkill
-	(*AddUserSkillRequest)(nil),    // 6: users.v1.AddUserSkillRequest
-	(*AddUserSkillResponse)(nil),   // 7: users.v1.AddUserSkillResponse
-	(*ListUserSkillsRequest)(nil),  // 8: users.v1.ListUserSkillsRequest
-	(*ListUserSkillsResponse)(nil), // 9: users.v1.ListUserSkillsResponse
+	(*Profile)(nil),                  // 0: users.v1.Profile
+	(*GetProfileRequest)(nil),        // 1: users.v1.GetProfileRequest
+	(*GetProfileResponse)(nil),       // 2: users.v1.GetProfileResponse
+	(*UpdateProfileRequest)(nil),     // 3: users.v1.UpdateProfileRequest
+	(*UpdateProfileResponse)(nil),    // 4: users.v1.UpdateProfileResponse
+	(*UserSkill)(nil),                // 5: users.v1.UserSkill
+	(*AddUserSkillRequest)(nil),      // 6: users.v1.AddUserSkillRequest
+	(*AddUserSkillResponse)(nil),     // 7: users.v1.AddUserSkillResponse
+	(*ListUserSkillsRequest)(nil),    // 8: users.v1.ListUserSkillsRequest
+	(*ListUserSkillsResponse)(nil),   // 9: users.v1.ListUserSkillsResponse
+	(*GetProfilesByIdsRequest)(nil),  // 10: users.v1.GetProfilesByIdsRequest
+	(*GetProfilesByIdsResponse)(nil), // 11: users.v1.GetProfilesByIdsResponse
 }
 var file_users_v1_users_proto_depIdxs = []int32{
-	0, // 0: users.v1.GetProfileResponse.profile:type_name -> users.v1.Profile
-	0, // 1: users.v1.UpdateProfileResponse.profile:type_name -> users.v1.Profile
-	5, // 2: users.v1.ListUserSkillsResponse.user_skills:type_name -> users.v1.UserSkill
-	1, // 3: users.v1.UsersService.GetProfile:input_type -> users.v1.GetProfileRequest
-	3, // 4: users.v1.UsersService.UpdateProfile:input_type -> users.v1.UpdateProfileRequest
-	6, // 5: users.v1.UsersService.AddUserSkill:input_type -> users.v1.AddUserSkillRequest
-	8, // 6: users.v1.UsersService.ListUserSkills:input_type -> users.v1.ListUserSkillsRequest
-	2, // 7: users.v1.UsersService.GetProfile:output_type -> users.v1.GetProfileResponse
-	4, // 8: users.v1.UsersService.UpdateProfile:output_type -> users.v1.UpdateProfileResponse
-	7, // 9: users.v1.UsersService.AddUserSkill:output_type -> users.v1.AddUserSkillResponse
-	9, // 10: users.v1.UsersService.ListUserSkills:output_type -> users.v1.ListUserSkillsResponse
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0,  // 0: users.v1.GetProfileResponse.profile:type_name -> users.v1.Profile
+	0,  // 1: users.v1.UpdateProfileResponse.profile:type_name -> users.v1.Profile
+	5,  // 2: users.v1.ListUserSkillsResponse.user_skills:type_name -> users.v1.UserSkill
+	0,  // 3: users.v1.GetProfilesByIdsResponse.profiles:type_name -> users.v1.Profile
+	1,  // 4: users.v1.UsersService.GetProfile:input_type -> users.v1.GetProfileRequest
+	3,  // 5: users.v1.UsersService.UpdateProfile:input_type -> users.v1.UpdateProfileRequest
+	6,  // 6: users.v1.UsersService.AddUserSkill:input_type -> users.v1.AddUserSkillRequest
+	8,  // 7: users.v1.UsersService.ListUserSkills:input_type -> users.v1.ListUserSkillsRequest
+	10, // 8: users.v1.UsersService.GetProfilesByIds:input_type -> users.v1.GetProfilesByIdsRequest
+	2,  // 9: users.v1.UsersService.GetProfile:output_type -> users.v1.GetProfileResponse
+	4,  // 10: users.v1.UsersService.UpdateProfile:output_type -> users.v1.UpdateProfileResponse
+	7,  // 11: users.v1.UsersService.AddUserSkill:output_type -> users.v1.AddUserSkillResponse
+	9,  // 12: users.v1.UsersService.ListUserSkills:output_type -> users.v1.ListUserSkillsResponse
+	11, // 13: users.v1.UsersService.GetProfilesByIds:output_type -> users.v1.GetProfilesByIdsResponse
+	9,  // [9:14] is the sub-list for method output_type
+	4,  // [4:9] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_users_v1_users_proto_init() }
@@ -620,7 +718,7 @@ func file_users_v1_users_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_users_v1_users_proto_rawDesc), len(file_users_v1_users_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

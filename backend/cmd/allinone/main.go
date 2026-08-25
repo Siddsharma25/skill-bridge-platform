@@ -79,6 +79,7 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler/lru"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/99designs/gqlgen/graphql/playground"
+	coderws "github.com/coder/websocket"
 	"github.com/joho/godotenv"
 	"github.com/vektah/gqlparser/v2/ast"
 	"go.uber.org/zap"
@@ -345,6 +346,15 @@ func main() {
 	srv.AddTransport(transport.Websocket{
 		InitFunc:              wsInitFunc(jwksClient, log),
 		KeepAlivePingInterval: 10 * time.Second,
+		// See api-gateway/main.go's identical Implementation field for
+		// why this is required: gqlgen's default WebsocketImplementation
+		// (coder/websocket) has its own same-origin-only Origin check,
+		// independent of cors.Middleware, that rejects every real
+		// deployed frontend's onNotification subscription unless told
+		// which origins to trust.
+		Implementation: transport.CoderWebsocketImplementation{
+			AcceptOptions: coderws.AcceptOptions{OriginPatterns: allowedOrigins},
+		},
 	})
 	srv.AddTransport(transport.Options{})
 	srv.AddTransport(transport.GET{})
@@ -377,7 +387,7 @@ func main() {
 	}
 	mux.Handle("/query", authctx.Middleware(jwksClient, log)(
 		ratelimit.Middleware(gatewayRedis, rateLimitCfg, log)(
-			dataloader.Middleware(skillsClient)(srv),
+			dataloader.Middleware(skillsClient, usersClient)(srv),
 		),
 	))
 

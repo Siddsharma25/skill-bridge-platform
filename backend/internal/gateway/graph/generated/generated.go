@@ -54,9 +54,10 @@ type ComplexityRoot struct {
 	}
 
 	JobMatch struct {
-		MatchedAt func(childComplexity int) int
-		Score     func(childComplexity int) int
-		UserID    func(childComplexity int) int
+		DisplayName func(childComplexity int) int
+		MatchedAt   func(childComplexity int) int
+		Score       func(childComplexity int) int
+		UserID      func(childComplexity int) int
 	}
 
 	Mutation struct {
@@ -205,6 +206,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.ComplexityRoot.Job.Title(childComplexity), true
 
+	case "JobMatch.displayName":
+		if e.ComplexityRoot.JobMatch.DisplayName == nil {
+			break
+		}
+
+		return e.ComplexityRoot.JobMatch.DisplayName(childComplexity), true
 	case "JobMatch.matchedAt":
 		if e.ComplexityRoot.JobMatch.MatchedAt == nil {
 			break
@@ -587,15 +594,21 @@ type Job {
 }
 
 # JobMatch is one row of jobs-service's jobs.job_matches, produced by the
-# in-process matching worker. userId is left opaque (same reasoning as
-# requiredSkills' skill IDs before resolution) — resolving it to a display
-# name would mean a call into users-service, which the gateway can add
-# later if a UI actually needs it; not built here since it's not what this
-# phase is demonstrating.
+# in-process matching worker.
 type JobMatch {
   userId: ID!
   score: Float!
   matchedAt: String!
+
+  """
+  The matched user's display name, resolved from users-service via the
+  gateway's UserByID dataloader (batches every distinct userId across a
+  job's match list into one GetProfilesByIds call — see
+  internal/gateway/dataloader). Falls back to userId itself if the user
+  hasn't set a display name yet (or has no profile row at all), so the UI
+  always has *something* human-scannable to show instead of a bare UUID.
+  """
+  displayName: String!
 }
 
 # UserSkill pairs one of a user's claimed skills (resolved from
@@ -776,6 +789,8 @@ func (ec *executionContext) childFields_JobMatch(ctx context.Context, field grap
 		return ec.fieldContext_JobMatch_score(ctx, field)
 	case "matchedAt":
 		return ec.fieldContext_JobMatch_matchedAt(ctx, field)
+	case "displayName":
+		return ec.fieldContext_JobMatch_displayName(ctx, field)
 	}
 	return nil, fmt.Errorf("no field named %q was found under type JobMatch", field.Name)
 }
@@ -1447,6 +1462,29 @@ func (ec *executionContext) _JobMatch_matchedAt(ctx context.Context, field graph
 	)
 }
 func (ec *executionContext) fieldContext_JobMatch_matchedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("JobMatch", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _JobMatch_displayName(ctx context.Context, field graphql.CollectedField, obj *model.JobMatch) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_JobMatch_displayName(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.DisplayName, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_JobMatch_displayName(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	return graphql.NewScalarFieldContext("JobMatch", field, false, false, errors.New("field of type String does not have child fields"))
 }
 
@@ -3648,6 +3686,11 @@ func (ec *executionContext) _JobMatch(ctx context.Context, sel ast.SelectionSet,
 			}
 		case "matchedAt":
 			out.Values[i] = ec._JobMatch_matchedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "displayName":
+			out.Values[i] = ec._JobMatch_displayName(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}

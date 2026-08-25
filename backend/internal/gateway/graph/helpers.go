@@ -95,6 +95,66 @@ func (r *Resolver) resolveSkillsViaLoader(ctx context.Context, ids []string) ([]
 	return out, nil
 }
 
+// resolveDisplayNamesViaLoader resolves each of ids (JobMatch.userId
+// values) to a display name via the per-request UserByID dataloader,
+// batching every distinct id across one job's match list into a single
+// GetProfilesByIds call — same reasoning as resolveSkillsViaLoader above.
+// A dangling id, or a real profile with no display name set yet, both
+// fall back to the id itself (see schema.graphqls' JobMatch.displayName
+// doc comment) rather than surfacing an empty string or an error — a job
+// match should always show *something* human-scannable.
+func (r *Resolver) resolveDisplayNamesViaLoader(ctx context.Context, ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	loaders := dataloader.FromContext(ctx)
+	if loaders == nil {
+		return r.resolveDisplayNames(ctx, ids)
+	}
+
+	thunks := make([]func() (*model.Profile, error), len(ids))
+	for i, id := range ids {
+		thunks[i] = loaders.UserByID.Load(ctx, id)
+	}
+
+	out := make([]string, len(ids))
+	for i, thunk := range thunks {
+		p, err := thunk()
+		if err != nil {
+			return nil, translateGRPCError(err)
+		}
+		if p != nil && p.DisplayName != "" {
+			out[i] = p.DisplayName
+		} else {
+			out[i] = ids[i]
+		}
+	}
+	return out, nil
+}
+
+// resolveDisplayNames is resolveDisplayNamesViaLoader's no-dataloader
+// fallback (a resolver invoked outside dataloader.Middleware, e.g. a
+// resolver-level test) — same reasoning as resolveSkills above.
+func (r *Resolver) resolveDisplayNames(ctx context.Context, ids []string) ([]string, error) {
+	resp, err := r.UsersClient.GetProfilesByIds(ctx, &usersv1.GetProfilesByIdsRequest{UserIds: ids})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	byUserID := make(map[string]string, len(resp.GetProfiles()))
+	for _, p := range resp.GetProfiles() {
+		byUserID[p.GetUserId()] = p.GetDisplayName()
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		if name, ok := byUserID[id]; ok && name != "" {
+			out[i] = name
+		} else {
+			out[i] = id
+		}
+	}
+	return out, nil
+}
+
 // requireUserID returns the verified caller's user ID from ctx, or a
 // GraphQL error if the request had no valid bearer token. Every resolver
 // that requires an authenticated caller (myProfile, updateProfile,

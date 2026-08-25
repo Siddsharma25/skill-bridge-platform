@@ -47,15 +47,21 @@ type Job {
 }
 
 # JobMatch is one row of jobs-service's jobs.job_matches, produced by the
-# in-process matching worker. userId is left opaque (same reasoning as
-# requiredSkills' skill IDs before resolution) — resolving it to a display
-# name would mean a call into users-service, which the gateway can add
-# later if a UI actually needs it; not built here since it's not what this
-# phase is demonstrating.
+# in-process matching worker.
 type JobMatch {
   userId: ID!
   score: Float!
   matchedAt: String!
+
+  """
+  The matched user's display name, resolved from users-service via the
+  gateway's UserByID dataloader (batches every distinct userId across a
+  job's match list into one GetProfilesByIds call — see
+  internal/gateway/dataloader). Falls back to userId itself if the user
+  hasn't set a display name yet (or has no profile row at all), so the UI
+  always has *something* human-scannable to show instead of a bare UUID.
+  """
+  displayName: String!
 }
 
 # UserSkill pairs one of a user's claimed skills (resolved from

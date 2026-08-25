@@ -46,9 +46,24 @@ func (r *jobResolver) Matches(ctx context.Context, obj *model.Job) ([]*model.Job
 	if err != nil {
 		return nil, translateGRPCError(err)
 	}
+
+	ids := make([]string, len(resp.GetMatches()))
+	for i, m := range resp.GetMatches() {
+		ids[i] = m.GetUserId()
+	}
+	displayNames, err := r.resolveDisplayNamesViaLoader(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]*model.JobMatch, 0, len(resp.GetMatches()))
-	for _, m := range resp.GetMatches() {
-		out = append(out, &model.JobMatch{UserID: m.GetUserId(), Score: m.GetScore(), MatchedAt: m.GetMatchedAt()})
+	for i, m := range resp.GetMatches() {
+		out = append(out, &model.JobMatch{
+			UserID:      m.GetUserId(),
+			Score:       m.GetScore(),
+			MatchedAt:   m.GetMatchedAt(),
+			DisplayName: displayNames[i],
+		})
 	}
 	return out, nil
 }
@@ -110,11 +125,11 @@ func (r *mutationResolver) CreateSkill(ctx context.Context, name string, categor
 
 // CreateJob is the resolver for the createJob field. Unauthenticated in
 // Phase 1b, same reasoning as CreateSkill.
-func (r *mutationResolver) CreateJob(ctx context.Context, title string, description string, requiredSkillIDs []string) (*model.Job, error) {
+func (r *mutationResolver) CreateJob(ctx context.Context, title string, description string, requiredSkillIds []string) (*model.Job, error) {
 	resp, err := r.JobsClient.CreateJob(ctx, &jobsv1.CreateJobRequest{
 		Title:            title,
 		Description:      description,
-		RequiredSkillIds: requiredSkillIDs,
+		RequiredSkillIds: requiredSkillIds,
 	})
 	if err != nil {
 		return nil, translateGRPCError(err)
@@ -179,7 +194,7 @@ func (r *profileResolver) Skills(ctx context.Context, obj *model.Profile) ([]*mo
 }
 
 // Ping is the resolver for the ping field.
-func (r *queryResolver) Ping(_ context.Context) (string, error) {
+func (r *queryResolver) Ping(ctx context.Context) (string, error) {
 	return "pong", nil
 }
 

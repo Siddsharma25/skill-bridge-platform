@@ -47,6 +47,15 @@ service UsersService {
   // skills-service's data, and joining it in is the gateway's job (a
   // small, deliberate N+1 left for Phase 1c's dataloader work).
   rpc ListUserSkills(ListUserSkillsRequest) returns (ListUserSkillsResponse);
+
+  // GetProfilesByIds returns every profile matching one of ids (any id with
+  // no matching row is silently omitted, not an error, and no row is
+  // lazily created for it — unlike GetProfile/UpdateProfile, this is a
+  // read-only batch lookup). Mirrors skills-service's GetSkillsByIds:
+  // added so the gateway's dataloader can batch every distinct user_id a
+  // response needs to display a name for (e.g. JobMatch.displayName) into
+  // one call instead of one GetProfile per match. See docs/DECISIONS.md.
+  rpc GetProfilesByIds(GetProfilesByIdsRequest) returns (GetProfilesByIdsResponse);
 }
 
 message Profile {
@@ -99,4 +108,12 @@ message ListUserSkillsRequest {
 
 message ListUserSkillsResponse {
   repeated UserSkill user_skills = 1;
+}
+
+message GetProfilesByIdsRequest {
+  repeated string user_ids = 1;
+}
+
+message GetProfilesByIdsResponse {
+  repeated Profile profiles = 1;
 }

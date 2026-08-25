@@ -24,10 +24,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	UsersService_GetProfile_FullMethodName     = "/users.v1.UsersService/GetProfile"
-	UsersService_UpdateProfile_FullMethodName  = "/users.v1.UsersService/UpdateProfile"
-	UsersService_AddUserSkill_FullMethodName   = "/users.v1.UsersService/AddUserSkill"
-	UsersService_ListUserSkills_FullMethodName = "/users.v1.UsersService/ListUserSkills"
+	UsersService_GetProfile_FullMethodName       = "/users.v1.UsersService/GetProfile"
+	UsersService_UpdateProfile_FullMethodName    = "/users.v1.UsersService/UpdateProfile"
+	UsersService_AddUserSkill_FullMethodName     = "/users.v1.UsersService/AddUserSkill"
+	UsersService_ListUserSkills_FullMethodName   = "/users.v1.UsersService/ListUserSkills"
+	UsersService_GetProfilesByIds_FullMethodName = "/users.v1.UsersService/GetProfilesByIds"
 )
 
 // UsersServiceClient is the client API for UsersService service.
@@ -70,6 +71,14 @@ type UsersServiceClient interface {
 	// skills-service's data, and joining it in is the gateway's job (a
 	// small, deliberate N+1 left for Phase 1c's dataloader work).
 	ListUserSkills(ctx context.Context, in *ListUserSkillsRequest, opts ...grpc.CallOption) (*ListUserSkillsResponse, error)
+	// GetProfilesByIds returns every profile matching one of ids (any id with
+	// no matching row is silently omitted, not an error, and no row is
+	// lazily created for it — unlike GetProfile/UpdateProfile, this is a
+	// read-only batch lookup). Mirrors skills-service's GetSkillsByIds:
+	// added so the gateway's dataloader can batch every distinct user_id a
+	// response needs to display a name for (e.g. JobMatch.displayName) into
+	// one call instead of one GetProfile per match. See docs/DECISIONS.md.
+	GetProfilesByIds(ctx context.Context, in *GetProfilesByIdsRequest, opts ...grpc.CallOption) (*GetProfilesByIdsResponse, error)
 }
 
 type usersServiceClient struct {
@@ -120,6 +129,16 @@ func (c *usersServiceClient) ListUserSkills(ctx context.Context, in *ListUserSki
 	return out, nil
 }
 
+func (c *usersServiceClient) GetProfilesByIds(ctx context.Context, in *GetProfilesByIdsRequest, opts ...grpc.CallOption) (*GetProfilesByIdsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProfilesByIdsResponse)
+	err := c.cc.Invoke(ctx, UsersService_GetProfilesByIds_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UsersServiceServer is the server API for UsersService service.
 // All implementations must embed UnimplementedUsersServiceServer
 // for forward compatibility.
@@ -160,6 +179,14 @@ type UsersServiceServer interface {
 	// skills-service's data, and joining it in is the gateway's job (a
 	// small, deliberate N+1 left for Phase 1c's dataloader work).
 	ListUserSkills(context.Context, *ListUserSkillsRequest) (*ListUserSkillsResponse, error)
+	// GetProfilesByIds returns every profile matching one of ids (any id with
+	// no matching row is silently omitted, not an error, and no row is
+	// lazily created for it — unlike GetProfile/UpdateProfile, this is a
+	// read-only batch lookup). Mirrors skills-service's GetSkillsByIds:
+	// added so the gateway's dataloader can batch every distinct user_id a
+	// response needs to display a name for (e.g. JobMatch.displayName) into
+	// one call instead of one GetProfile per match. See docs/DECISIONS.md.
+	GetProfilesByIds(context.Context, *GetProfilesByIdsRequest) (*GetProfilesByIdsResponse, error)
 	mustEmbedUnimplementedUsersServiceServer()
 }
 
@@ -181,6 +208,9 @@ func (UnimplementedUsersServiceServer) AddUserSkill(context.Context, *AddUserSki
 }
 func (UnimplementedUsersServiceServer) ListUserSkills(context.Context, *ListUserSkillsRequest) (*ListUserSkillsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListUserSkills not implemented")
+}
+func (UnimplementedUsersServiceServer) GetProfilesByIds(context.Context, *GetProfilesByIdsRequest) (*GetProfilesByIdsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetProfilesByIds not implemented")
 }
 func (UnimplementedUsersServiceServer) mustEmbedUnimplementedUsersServiceServer() {}
 func (UnimplementedUsersServiceServer) testEmbeddedByValue()                      {}
@@ -275,6 +305,24 @@ func _UsersService_ListUserSkills_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UsersService_GetProfilesByIds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProfilesByIdsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UsersServiceServer).GetProfilesByIds(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UsersService_GetProfilesByIds_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UsersServiceServer).GetProfilesByIds(ctx, req.(*GetProfilesByIdsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UsersService_ServiceDesc is the grpc.ServiceDesc for UsersService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -297,6 +345,10 @@ var UsersService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListUserSkills",
 			Handler:    _UsersService_ListUserSkills_Handler,
+		},
+		{
+			MethodName: "GetProfilesByIds",
+			Handler:    _UsersService_GetProfilesByIds_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

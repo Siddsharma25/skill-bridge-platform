@@ -100,7 +100,10 @@ func TestJobsQuery_RequiredSkills_BatchesThroughLiveHandler(t *testing.T) {
 		SkillsClient: skillsClient,
 	}
 	gqlHandler := handler.NewDefaultServer(generated.NewExecutableSchema(generated.Config{Resolvers: resolver}))
-	wrapped := dataloader.Middleware(skillsClient)(gqlHandler)
+	// nil users client: this test only exercises Job.requiredSkills, never
+	// Job.matches/JobMatch.displayName, so UserByID's loader is
+	// constructed but never invoked.
+	wrapped := dataloader.Middleware(skillsClient, nil)(gqlHandler)
 
 	body, err := json.Marshal(map[string]string{
 		Query: `{ jobs { id requiredSkills { id name category } } }`,
