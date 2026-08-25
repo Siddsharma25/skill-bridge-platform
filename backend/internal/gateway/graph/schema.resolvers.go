@@ -7,6 +7,8 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
+	"time"
 
 	authv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/auth/v1"
 	jobsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/jobs/v1"
@@ -14,6 +16,8 @@ import (
 	usersv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/generated"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/model"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/realtime"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -246,6 +250,72 @@ func (r *queryResolver) MyProfile(ctx context.Context) (*model.Profile, error) {
 	return toModelProfile(resp.GetProfile()), nil
 }
 
+// OnNotification is the resolver for the onNotification field (Phase
+// 3.5). requireUserID here is defense in depth, not the primary auth
+// gate: a WebSocket connection with no valid token is already rejected at
+// connection_init time (see cmd/api-gateway/main.go's wsInitFunc), before
+// any subscription over that connection can ever be started.
+//
+// Subscribes to this user's Redis pub/sub channel
+// (realtime.UserChannel(userID) — see internal/gateway/realtime, the
+// RabbitMQ -> Redis bridge that publishes onto it) and forwards each
+// message, decoded from JSON, into the channel gqlgen streams back to the
+// client as this field's output. Cleanup — Redis UNSUBSCRIBE via
+// Subscription.Close, and closing the output channel — happens in exactly
+// one place: the forwarding goroutine's defer, triggered when ctx is
+// cancelled (the client disconnects, or gqlgen cancels this specific
+// subscription's context on a graphql-ws `stop` message — see
+// transport.Websocket's subscribe/stop handling in the gqlgen library).
+// This is what makes a dropped WebSocket client release its Redis
+// subscription instead of leaking it — verified live via `PUBSUB NUMSUB`
+// before/after a client disconnect, see docs/DECISIONS.md.
+func (r *subscriptionResolver) OnNotification(ctx context.Context) (<-chan *model.Notification, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sub, ok := r.Realtime.Subscribe(ctx, realtime.UserChannel(userID))
+	if !ok {
+		return nil, &gqlError{msg: "realtime notifications are unavailable on this instance"}
+	}
+
+	out := make(chan *model.Notification)
+	go func() {
+		defer close(out)
+		defer func() { _ = sub.Close() }()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-sub.Channel():
+				if !ok {
+					return
+				}
+				var notif rabbitmq.RealtimeNotification
+				if err := json.Unmarshal([]byte(msg.Payload), &notif); err != nil {
+					// Same "log and drop, never crash the consumer" discipline
+					// as every other broker-payload decode in this codebase —
+					// see internal/gateway/realtime.Bridge.Handler.
+					continue
+				}
+				select {
+				case out <- &model.Notification{
+					ID:        notif.ID,
+					Type:      notif.Type,
+					Message:   notif.Message,
+					CreatedAt: notif.CreatedAt.UTC().Format(time.RFC3339),
+				}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	return out, nil
+}
+
 // Skill is the resolver for the UserSkill.skill field. Same batched path
 // as Job.requiredSkills — see resolveSkillsViaLoader.
 func (r *userSkillResolver) Skill(ctx context.Context, obj *model.UserSkill) (*model.Skill, error) {
@@ -271,13 +341,17 @@ func (r *Resolver) Profile() generated.ProfileResolver { return &profileResolver
 // Query returns generated.QueryResolver implementation.
 func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }
 
+// Subscription returns generated.SubscriptionResolver implementation.
+func (r *Resolver) Subscription() generated.SubscriptionResolver { return &subscriptionResolver{r} }
+
 // UserSkill returns generated.UserSkillResolver implementation.
 func (r *Resolver) UserSkill() generated.UserSkillResolver { return &userSkillResolver{r} }
 
 type (
-	jobResolver       struct{ *Resolver }
-	mutationResolver  struct{ *Resolver }
-	profileResolver   struct{ *Resolver }
-	queryResolver     struct{ *Resolver }
-	userSkillResolver struct{ *Resolver }
+	jobResolver          struct{ *Resolver }
+	mutationResolver     struct{ *Resolver }
+	profileResolver      struct{ *Resolver }
+	queryResolver        struct{ *Resolver }
+	subscriptionResolver struct{ *Resolver }
+	userSkillResolver    struct{ *Resolver }
 )

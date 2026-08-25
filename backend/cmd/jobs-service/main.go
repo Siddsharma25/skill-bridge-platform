@@ -25,6 +25,7 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/health"
 	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
 )
@@ -78,6 +79,18 @@ func main() {
 	// pattern as DB/Redis. See internal/platform/kafka and
 	// docs/DECISIONS.md.
 	kafkaProducer := kafkaplat.NewProducerFromEnv(os.Getenv, log)
+
+	// RabbitMQ producer (Phase 3.5): jobs-service's first RabbitMQ
+	// producer — every prior use of RabbitMQ in this codebase was
+	// auth-service publishing notifications.email. The matching worker
+	// (below) publishes a best-effort realtime "job_match" notification to
+	// notifications.realtime for every user it matches, which is this
+	// phase's live-verification trigger (see internal/jobs/matcher.go and
+	// docs/DECISIONS.md for why job.matched, not auth-service's
+	// registration-time publish, is what's used to prove the WebSocket
+	// subscription actually works). Degrades gracefully, same pattern as
+	// every other optional dependency here.
+	rabbitProducer := rabbitmq.NewProducerFromEnv(os.Getenv, log)
 
 	jobsServer := jobs.NewServer(gormDB, redisCache, kafkaProducer, log)
 
@@ -146,7 +159,7 @@ func main() {
 
 	matcherConsumer := startConsumer(consumerCtx, &consumerWG, log, matcherConsumerGroup,
 		[]string{kafkaplat.TopicJobPosted},
-		jobs.HandleJobPosted(jobs.NewGormMatchStore(gormDB), kafkaProducer, log))
+		jobs.HandleJobPosted(jobs.NewGormMatchStore(gormDB), kafkaProducer, rabbitProducer, log))
 
 	cacheInvalidatorConsumer := startConsumer(consumerCtx, &consumerWG, log, cacheInvalidatorConsumerGroup,
 		[]string{kafkaplat.TopicSkillUpdated},
@@ -190,6 +203,10 @@ func main() {
 			},
 			func(_ context.Context) error {
 				kafkaProducer.Close()
+				return nil
+			},
+			func(_ context.Context) error {
+				rabbitProducer.Close()
 				return nil
 			},
 		},

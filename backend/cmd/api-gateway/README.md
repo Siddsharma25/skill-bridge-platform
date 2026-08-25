@@ -25,6 +25,53 @@ HTTPS; everything behind it is private gRPC.
   pattern as every other service.
 - GraphQL Playground at `/` in non-production environments.
 
+## Realtime notifications (Phase 3.5)
+
+`Subscription.onNotification: Notification!` streams every realtime
+notification published for the authenticated caller (auth-service on
+`Register`, jobs-service's matching worker on `job.matched`), over a
+`graphql-ws` WebSocket connection at the same `/query` route the regular
+GraphQL handler serves — `gqlgen`'s `handler.New` (not the deprecated
+`NewDefaultServer`, which already registers its own unauthenticated
+`transport.Websocket{}`) is wired up explicitly in `main.go` specifically
+so `transport.Websocket.InitFunc` (`wsInitFunc`) can be configured.
+
+- **Auth is different for a subscription than a query/mutation.** A
+  WebSocket upgrade request doesn't carry a bearer header on every
+  message the way HTTP does, so the `graphql-ws` protocol has the client
+  send a token once, in the `connection_init` message's payload.
+  `wsInitFunc` extracts it (`Authorization: Bearer <token>` or a bare
+  `token` field), verifies it via `authctx.VerifyToken` (the same
+  verifier `authctx.Middleware` uses for HTTP), and — unlike the HTTP
+  middleware, which never rejects a request itself — rejects the
+  connection outright on failure (closed with code 4401, the
+  `graphql-ws` protocol's own "Unauthorized" code) before any
+  `subscribe` message on that connection is ever accepted. The verified
+  identity becomes that one connection's base context; a fresh
+  `wsConnection` (and a fresh `InitFunc` call) exists per accepted
+  socket, so it can never leak across connections.
+- **The bridge:** api-gateway's own `internal/gateway/realtime.Bridge`
+  consumes RabbitMQ's `notifications.realtime` queue (a new
+  `rabbitmq.Consumer`, wired in `main.go` alongside the HTTP server) and
+  republishes each message onto Redis `PUBLISH realtime:user:<user_id>`.
+  The `onNotification` resolver (`schema.resolvers.go`) opens a Redis
+  `SUBSCRIBE` on the caller's own channel and forwards each message into
+  the channel gqlgen streams back to the client — cleaned up (Redis
+  unsubscribe, closing the output channel) the moment the connection's
+  context is cancelled, so a dropped WebSocket client can't leak a live
+  Redis subscription. This is deliberately mediated through Redis
+  pub/sub rather than an in-memory map, so it works correctly across
+  multiple gateway replicas with no redesign — see `docs/DECISIONS.md`.
+- **Live verification uses `job.matched`, not `Register`'s welcome
+  notification**, even though both publish to `notifications.realtime`:
+  a registration's publish happens before the new user could possibly
+  have a token to open a subscription with, and Redis pub/sub has no
+  replay buffer, so that race is lost by design. See
+  `docs/DECISIONS.md`'s Phase 3.5 notes and
+  `internal/gateway/livetest/subscription_live_test.go` (build-tag
+  `live`) for the actual proof: a real `graphql-transport-ws` client,
+  hand-speaking the protocol, receiving a live `job_match` push.
+
 ## JWT verification middleware (`internal/gateway/authctx`)
 
 `authctx.Middleware` wraps the `/query` handler: it extracts

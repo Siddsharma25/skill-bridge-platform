@@ -144,6 +144,37 @@ func (s *Server) Register(ctx context.Context, req *authv1.RegisterRequest) (*au
 		} else {
 			s.rabbitPublisher.Publish(ctx, rabbitmq.QueueNotificationsEmail, payload)
 		}
+
+		// Best-effort realtime "welcome" ping (Phase 3.5) — architecturally
+		// complete (this is the "auth-service on successful Register"
+		// publisher the plan calls for) but NOT this phase's live
+		// verification path: this publish happens synchronously, right
+		// here, before the RPC has even returned the freshly issued access
+		// token to the caller, so no client could possibly have opened a
+		// WebSocket onNotification subscription for cred.ID yet (there's
+		// no token to authenticate one with until Register returns) — and
+		// Redis pub/sub has no replay buffer, so a publish with no live
+		// subscriber is simply lost by design. See
+		// docs/DECISIONS.md's Phase 3.5 notes for the full reasoning and
+		// why jobs-service's job.matched publish (matcher.go) is used for
+		// live verification instead. Still published unconditionally here
+		// (not gated behind some "is anyone likely listening" check this
+		// codebase has no way to answer) since a real client that logs in
+		// again shortly after registering, or a future phase's UI that
+		// opens the subscription before registration completes, could
+		// still benefit from it landing.
+		realtimePayload, marshalErr := json.Marshal(rabbitmq.RealtimeNotification{
+			ID:        uuid.NewString(),
+			UserID:    cred.ID,
+			Type:      rabbitmq.RealtimeNotificationTypeWelcome,
+			Message:   "Welcome to Skill Bridge!",
+			CreatedAt: time.Now().UTC(),
+		})
+		if marshalErr != nil {
+			log.Error("failed to marshal realtime welcome notification payload; skipping publish", zap.Error(marshalErr))
+		} else {
+			s.rabbitPublisher.Publish(ctx, rabbitmq.QueueNotificationsRealtime, realtimePayload)
+		}
 	}
 
 	log.Info("registered new credential", zap.String("user_id", cred.ID))

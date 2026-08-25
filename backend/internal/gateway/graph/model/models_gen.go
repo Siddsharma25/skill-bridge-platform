@@ -16,6 +16,13 @@ type JobMatch struct {
 type Mutation struct {
 }
 
+type Notification struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Message   string `json:"message"`
+	CreatedAt string `json:"createdAt"`
+}
+
 type Query struct {
 }
 
@@ -23,4 +30,7 @@ type Skill struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Category string `json:"category"`
+}
+
+type Subscription struct {
 }

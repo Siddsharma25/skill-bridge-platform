@@ -11,9 +11,12 @@ package authctx
 
 import (
 	"context"
+	"errors"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/jwks"
 )
 
 // MetadataKey is the gRPC metadata key the verified user ID is forwarded
@@ -42,6 +45,31 @@ func NewContext(ctx context.Context, userID string) context.Context {
 func UserID(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(ctxKey).(string)
 	return id, ok && id != ""
+}
+
+// errNoSubject is returned by VerifyToken when a token parses and
+// verifies fine but carries no `sub` claim — a token this codebase's own
+// jwks.Sign would never produce, but a defensive check regardless (same
+// reasoning Middleware already applied inline before this was extracted).
+var errNoSubject = errors.New("authctx: token has no subject claim")
+
+// VerifyToken verifies a raw bearer token (no "Bearer " prefix) against
+// jwksClient and returns its `sub` claim, or an error if the token is
+// missing, malformed, expired, or fails signature verification. This is
+// the one place token verification actually happens — both Middleware
+// (HTTP requests, below) and the WebSocket `connection_init` handshake
+// (see cmd/api-gateway/main.go's wsInitFunc, Phase 3.5) call this rather
+// than each re-implementing "parse + verify + extract subject," so there
+// is exactly one code path to get that logic right in.
+func VerifyToken(ctx context.Context, jwksClient *jwks.Client, token string) (string, error) {
+	claims, err := jwks.Verify(ctx, jwksClient, token)
+	if err != nil {
+		return "", err
+	}
+	if claims.Subject == "" {
+		return "", errNoSubject
+	}
+	return claims.Subject, nil
 }
 
 // UnaryClientInterceptor forwards the verified user ID (if any) from ctx

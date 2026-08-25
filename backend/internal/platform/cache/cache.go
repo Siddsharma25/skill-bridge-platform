@@ -1,14 +1,17 @@
 // Package cache is Phase 1c's Redis client wrapper, shared by
-// skills-service/jobs-service (write-through response caching) and
-// api-gateway (fixed-window rate limiting — see internal/gateway/ratelimit).
+// skills-service/jobs-service (write-through response caching),
+// api-gateway (fixed-window rate limiting — see internal/gateway/ratelimit),
+// and, as of Phase 3.5, api-gateway's realtime notification bridge and
+// onNotification GraphQL subscription (pub/sub fan-out — see
+// internal/gateway/realtime and docs/DECISIONS.md's Phase 3.5 notes).
 // Every method degrades gracefully rather than failing the caller's
 // request: a missing REDIS_URL, an unreachable Redis, or any other
 // Redis-side error is logged and treated as "cache miss" / "rate limit
-// unavailable, allow the request" — the same resilience pattern this
-// codebase already applies to a missing DATABASE_URL (see
-// backend/CLAUDE.md and docs/DECISIONS.md). Availability wins over
-// strictness here, which is a deliberate trade-off documented in
-// docs/DECISIONS.md, not an oversight.
+// unavailable, allow the request" / "no live subscription available" —
+// the same resilience pattern this codebase already applies to a missing
+// DATABASE_URL (see backend/CLAUDE.md and docs/DECISIONS.md).
+// Availability wins over strictness here, which is a deliberate trade-off
+// documented in docs/DECISIONS.md, not an oversight.
 package cache
 
 import (
@@ -41,6 +44,53 @@ type Cache interface {
 // one Redis connection — see docs/DECISIONS.md.
 type RateLimiter interface {
 	Incr(ctx context.Context, key string, window time.Duration) (count int64, ok bool)
+}
+
+// PubSub is the subset of Client's behavior Phase 3.5's realtime
+// notification bridge depends on: api-gateway's RabbitMQ consumer
+// (internal/gateway/realtime.Bridge) republishes onto a Redis channel via
+// Publish, and the onNotification GraphQL subscription resolver
+// (schema.resolvers.go) opens a Subscribe on its caller's own channel.
+// Split from Cache/RateLimiter for the same reason those two are split
+// from each other — a genuinely different concern sharing the same Redis
+// connection, not because the underlying client differs. Defined as an
+// interface, same reasoning as Cache/RateLimiter, so a test can inject a
+// fake and assert "exactly one message was published to this channel"
+// without a real Redis instance.
+type PubSub interface {
+	// Publish publishes message on channel via Redis PUBLISH. Best-effort:
+	// like Set/Del, a failure (including Redis being disabled entirely) is
+	// logged and swallowed rather than propagated — the caller (the
+	// realtime bridge) has no primary write of its own to protect here;
+	// this *is* the whole operation, and Redis pub/sub already has no
+	// delivery guarantee even when it succeeds (see
+	// docs/DECISIONS.md's Phase 3.5 notes), so there is nothing a returned
+	// error would let the caller usefully do differently.
+	Publish(ctx context.Context, channel, message string)
+	// Subscribe opens a Redis pub/sub subscription on channel. ok is false
+	// when Redis is disabled/unreachable — the caller (the onNotification
+	// resolver) must treat that as "no live notifications available on
+	// this instance" (e.g. a clear GraphQL subscription error) rather than
+	// blocking forever or panicking, same degrade-gracefully convention as
+	// Cache.Get/RateLimiter.Incr reporting a miss/unavailable instead of
+	// erroring.
+	Subscribe(ctx context.Context, channel string) (Subscription, bool)
+}
+
+// Subscription is the minimal handle Subscribe hands back — satisfied
+// directly by *redis.PubSub (its Channel/Close methods already match this
+// shape), and by a fake in tests. Closing it is what releases the
+// underlying Redis subscription; the onNotification resolver's cleanup
+// path (ctx.Done()/client disconnect) must always call Close exactly
+// once, or a dropped WebSocket client leaks a live Redis subscription
+// forever — the specific leak Phase 3.5's task called out to test for.
+type Subscription interface {
+	// Channel matches *redis.PubSub's own signature (a variadic
+	// redis.ChannelOption, unused by every caller in this codebase today)
+	// rather than a narrower Channel() with no arguments, so *redis.PubSub
+	// satisfies this interface with zero adapter code.
+	Channel(opts ...redis.ChannelOption) <-chan *redis.Message
+	Close() error
 }
 
 // Client wraps a *redis.Client (nil when disabled) so every call site gets
@@ -150,6 +200,32 @@ func (c *Client) Incr(ctx context.Context, key string, window time.Duration) (co
 		}
 	}
 	return count, true
+}
+
+// Publish implements PubSub.Publish. See that interface's doc comment for
+// why a failure (or Redis being disabled) is logged and swallowed rather
+// than returned.
+func (c *Client) Publish(ctx context.Context, channel, message string) {
+	if !c.Enabled() {
+		c.log.Warn("pubsub disabled (no REDIS_URL); dropping realtime publish", zap.String("channel", channel))
+		return
+	}
+	if err := c.rdb.Publish(ctx, channel, message).Err(); err != nil {
+		c.log.Warn("redis publish failed; realtime notification will not be delivered",
+			zap.String("channel", channel), zap.Error(err))
+	}
+}
+
+// Subscribe implements PubSub.Subscribe. Returning (nil, false) rather
+// than a non-nil *redis.PubSub with no live connection matches
+// Cache.Get/RateLimiter.Incr's "unavailable is a distinct, checkable
+// return, never a partially-usable zero value" convention elsewhere in
+// this file.
+func (c *Client) Subscribe(ctx context.Context, channel string) (Subscription, bool) {
+	if !c.Enabled() {
+		return nil, false
+	}
+	return c.rdb.Subscribe(ctx, channel), true
 }
 
 // Close closes the underlying Redis connection. Safe to call on a disabled

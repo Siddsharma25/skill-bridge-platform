@@ -8,7 +8,25 @@ import (
 	"go.uber.org/zap"
 
 	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 )
+
+// fakeRealtimePublisher is an in-memory stand-in for rabbitmq.Publisher —
+// same reasoning as fakePublisher (kafka.Publisher) above: lets a test
+// assert what HandleJobPosted published to notifications.realtime (Phase
+// 3.5) without a real broker.
+type fakeRealtimePublisher struct {
+	calls []realtimePublishCall
+}
+
+type realtimePublishCall struct {
+	queue string
+	body  []byte
+}
+
+func (f *fakeRealtimePublisher) Publish(_ context.Context, queue string, body []byte) {
+	f.calls = append(f.calls, realtimePublishCall{queue: queue, body: body})
+}
 
 // fakeMatchStore is an in-memory stand-in for MatchStore. rows is keyed by
 // (job_id, user_id) exactly like the real jobs.job_matches primary key —
@@ -50,7 +68,8 @@ func TestHandleJobPosted_ReprocessingSameEventIsIdempotent(t *testing.T) {
 	// CandidatesForSkills' doc comment).
 	store := newFakeMatchStore(map[string]int{"user-1": 2, "user-2": 1})
 	publisher := &fakePublisher{}
-	handler := HandleJobPosted(store, publisher, zap.NewNop())
+	realtimePublisher := &fakeRealtimePublisher{}
+	handler := HandleJobPosted(store, publisher, realtimePublisher, zap.NewNop())
 
 	evt := kafkaplat.JobPosted{JobID: "job-1", RequiredSkillIDs: []string{"skill-1", "skill-2"}}
 	payload, err := json.Marshal(evt)
@@ -92,11 +111,38 @@ func TestHandleJobPosted_ReprocessingSameEventIsIdempotent(t *testing.T) {
 	if len(publisher.calls) != 4 {
 		t.Fatalf("expected 4 job.matched publishes (2 matched users x 2 deliveries), got %d", len(publisher.calls))
 	}
+
+	// Same reasoning applies to the Phase 3.5 realtime notification: not
+	// deduplicated at the event level either, so reprocessing publishes
+	// again — a downstream consumer (api-gateway's realtime bridge) is
+	// expected to tolerate that the same way job.matched's own downstream
+	// consumers are.
+	if len(realtimePublisher.calls) != 4 {
+		t.Fatalf("expected 4 realtime job_match publishes (2 matched users x 2 deliveries), got %d", len(realtimePublisher.calls))
+	}
+	for _, call := range realtimePublisher.calls {
+		if call.queue != rabbitmq.QueueNotificationsRealtime {
+			t.Fatalf("expected realtime publish to queue %q, got %q", rabbitmq.QueueNotificationsRealtime, call.queue)
+		}
+		var notif rabbitmq.RealtimeNotification
+		if err := json.Unmarshal(call.body, &notif); err != nil {
+			t.Fatalf("failed to decode realtime notification payload: %v", err)
+		}
+		if notif.Type != rabbitmq.RealtimeNotificationTypeJobMatch {
+			t.Errorf("expected notification type %q, got %q", rabbitmq.RealtimeNotificationTypeJobMatch, notif.Type)
+		}
+		if notif.JobID != "job-1" {
+			t.Errorf("expected job_id %q, got %q", "job-1", notif.JobID)
+		}
+		if notif.UserID != "user-1" && notif.UserID != "user-2" {
+			t.Errorf("expected user_id to be one of the matched users, got %q", notif.UserID)
+		}
+	}
 }
 
 func TestHandleJobPosted_NoRequiredSkillsSkipsMatching(t *testing.T) {
 	store := newFakeMatchStore(map[string]int{"user-1": 5})
-	handler := HandleJobPosted(store, nil, zap.NewNop())
+	handler := HandleJobPosted(store, nil, nil, zap.NewNop())
 
 	evt := kafkaplat.JobPosted{JobID: "job-1", RequiredSkillIDs: nil}
 	payload, _ := json.Marshal(evt)
@@ -110,7 +156,7 @@ func TestHandleJobPosted_NoRequiredSkillsSkipsMatching(t *testing.T) {
 
 func TestHandleJobPosted_MalformedPayloadIsSkippedNotErrored(t *testing.T) {
 	store := newFakeMatchStore(nil)
-	handler := HandleJobPosted(store, nil, zap.NewNop())
+	handler := HandleJobPosted(store, nil, nil, zap.NewNop())
 	if err := handler(context.Background(), kafkaplat.Message{Value: []byte("not json")}); err != nil {
 		t.Fatalf("expected a malformed payload to be logged and skipped, not returned as an error, got: %v", err)
 	}
@@ -118,7 +164,7 @@ func TestHandleJobPosted_MalformedPayloadIsSkippedNotErrored(t *testing.T) {
 
 func TestHandleJobPosted_NoPublisherStillUpserts(t *testing.T) {
 	store := newFakeMatchStore(map[string]int{"user-1": 1})
-	handler := HandleJobPosted(store, nil, zap.NewNop())
+	handler := HandleJobPosted(store, nil, nil, zap.NewNop())
 
 	evt := kafkaplat.JobPosted{JobID: "job-1", RequiredSkillIDs: []string{"skill-1"}}
 	payload, _ := json.Marshal(evt)

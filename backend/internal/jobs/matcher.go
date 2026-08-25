@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 )
 
 // matchThresholdOverlap is the matching worker's threshold: a candidate
@@ -104,7 +106,22 @@ func (s *gormMatchStore) UpsertMatch(ctx context.Context, jobID, userID string, 
 // threshold, and publishes job.matched for each. A malformed payload or a
 // job with no required skills is logged and skipped (returns nil), same
 // poison-message reasoning as HandleUserSkillsUpdated.
-func HandleJobPosted(store MatchStore, publisher kafkaplat.Publisher, log *zap.Logger) kafkaplat.Handler {
+//
+// realtimePublisher is Phase 3.5's addition: for every matched user, a
+// best-effort RealtimeNotification is also published to RabbitMQ's
+// notifications.realtime queue (see internal/platform/rabbitmq and
+// docs/DECISIONS.md), which api-gateway's realtime bridge republishes onto
+// that user's Redis pub/sub channel for any live onNotification GraphQL
+// subscription to receive. This is the phase's live-verification trigger
+// (as opposed to auth-service's Register, which also publishes a realtime
+// notification but can't be used to prove the subscription works live —
+// see internal/auth/server.go and docs/DECISIONS.md for why): a user can
+// register, log in, and open a genuinely listening subscription before a
+// job matching their skills is created, so the publish here reliably has
+// a chance of reaching a live subscriber. May be nil, in which case this
+// realtime publish is simply skipped — same nil-safe pattern as the kafka
+// publisher parameter.
+func HandleJobPosted(store MatchStore, publisher kafkaplat.Publisher, realtimePublisher rabbitmq.Publisher, log *zap.Logger) kafkaplat.Handler {
 	return func(ctx context.Context, msg kafkaplat.Message) error {
 		var evt kafkaplat.JobPosted
 		if err := json.Unmarshal(msg.Value, &evt); err != nil {
@@ -145,9 +162,33 @@ func HandleJobPosted(store MatchStore, publisher kafkaplat.Publisher, log *zap.L
 				})
 				if err != nil {
 					log.Error("failed to marshal job.matched event; not published", zap.Error(err), zap.String("job_id", evt.JobID), zap.String("user_id", userID))
-					continue
+				} else {
+					publisher.Publish(ctx, kafkaplat.TopicJobMatched, evt.JobID, payload)
 				}
-				publisher.Publish(ctx, kafkaplat.TopicJobMatched, evt.JobID, payload)
+			}
+
+			// Best-effort realtime "job_match" ping (Phase 3.5) — see this
+			// function's doc comment for why this is the phase's live
+			// verification path. A marshal/publish failure here is logged
+			// and never fails this handler or blocks the next matched
+			// user/redelivery — same "primary write already succeeded,
+			// this notification is best-effort" reasoning as every other
+			// realtime/email publish in this codebase.
+			if realtimePublisher != nil {
+				realtimePayload, err := json.Marshal(rabbitmq.RealtimeNotification{
+					ID:        uuid.NewString(),
+					UserID:    userID,
+					Type:      rabbitmq.RealtimeNotificationTypeJobMatch,
+					Message:   "A new job matches your skills!",
+					CreatedAt: time.Now().UTC(),
+					JobID:     evt.JobID,
+					Score:     score,
+				})
+				if err != nil {
+					log.Error("failed to marshal realtime job_match notification; not published", zap.Error(err), zap.String("job_id", evt.JobID), zap.String("user_id", userID))
+				} else {
+					realtimePublisher.Publish(ctx, rabbitmq.QueueNotificationsRealtime, realtimePayload)
+				}
 			}
 		}
 

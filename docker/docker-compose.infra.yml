@@ -27,6 +27,19 @@
 #                          vanishing. See internal/platform/rabbitmq and
 #                          docs/DECISIONS.md's "Phase 3 implementation
 #                          notes" for the topology/ownership reasoning.
+#                          As of Phase 3.5, auth-service and jobs-service
+#                          also publish to `notifications.realtime`
+#                          (deliberately no DLQ — see topology.go),
+#                          consumed only by api-gateway's own in-process
+#                          bridge (internal/gateway/realtime), which
+#                          republishes onto this same Redis instance's
+#                          pub/sub for any live `onNotification` GraphQL
+#                          subscription — see docs/DECISIONS.md's "Phase
+#                          3.5 implementation notes." No new container is
+#                          needed for this: the queue is declared in code
+#                          (same idempotent-declare-by-every-caller
+#                          pattern as `notifications.email`) against the
+#                          same RabbitMQ/Redis already running here.
 #
 # Postgres is deliberately absent too: this project uses a single shared
 # Supabase instance (schema-per-service) rather than a local Postgres

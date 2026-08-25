@@ -77,6 +77,35 @@ type Profile {
   skills: [UserSkill!]!
 }
 
+# Notification is Phase 3.5's realtime push payload — the GraphQL-facing
+# shape of internal/platform/rabbitmq.RealtimeNotification, deliberately
+# minimal (no jobId/score on the wire; a client that needs more detail can
+# follow up with a `job(id: ...)` query). See docs/DECISIONS.md for the
+# full realtime design and internal/gateway/realtime for the RabbitMQ ->
+# Redis pub/sub bridge that feeds onNotification below.
+type Notification {
+  id: ID!
+  type: String!
+  message: String!
+  createdAt: String!
+}
+
+type Subscription {
+  """
+  Streams every realtime notification published for the authenticated
+  caller (auth-service on Register, jobs-service's matching worker on
+  job.matched) for as long as the WebSocket connection stays open.
+  Requires a valid token supplied via the graphql-ws `connection_init`
+  payload (an `Authorization: Bearer <token>` or `token` field) — there is
+  no HTTP Authorization header on a WebSocket upgrade request to reuse the
+  way every other authenticated operation in this schema does. See
+  cmd/api-gateway/main.go's wsInitFunc and docs/DECISIONS.md's Phase 3.5
+  notes for why. A connection with no valid token is rejected at
+  connection_init time, before this field is ever resolved.
+  """
+  onNotification: Notification!
+}
+
 type Mutation {
   """
   Creates a new account and returns an immediately-usable access token,

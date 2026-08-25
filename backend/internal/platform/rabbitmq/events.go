@@ -32,3 +32,47 @@ type EmailNotification struct {
 	EventType string    `json:"event_type"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// RealtimeNotificationTypeWelcome is published by auth-service's Register
+// (see internal/auth/server.go) — the architecturally-complete producer for
+// this event type, but NOT this phase's live-verification trigger: the
+// publish happens synchronously inside Register, before the newly
+// registered user could possibly have opened a WebSocket subscription (no
+// JWT exists to authenticate one with until Register returns), and Redis
+// pub/sub has no replay buffer — a publish with nobody subscribed is simply
+// lost. See docs/DECISIONS.md's Phase 3.5 notes for the full reasoning and
+// why job.matched (RealtimeNotificationTypeJobMatch) is used for live
+// verification instead.
+const RealtimeNotificationTypeWelcome = "welcome"
+
+// RealtimeNotificationTypeJobMatch is published by jobs-service's matching
+// worker (internal/jobs/matcher.go's HandleJobPosted) once per user it
+// upserts a jobs.job_matches row for — this phase's live-verification
+// trigger, since a user can register, log in, and open a genuinely
+// listening onNotification subscription before a job matching their
+// skills is created, unlike the registration-time welcome notification
+// above. See docs/DECISIONS.md.
+const RealtimeNotificationTypeJobMatch = "job_match"
+
+// RealtimeNotification is QueueNotificationsRealtime's payload (Phase
+// 3.5) — a plain JSON-tagged struct, same reasoning as EmailNotification
+// above (crosses no language boundary here, but keeping every broker
+// payload in this codebase JSON rather than protobuf is the established,
+// documented convention — see docs/DECISIONS.md's Phase 2 notes on event
+// payload format).
+//
+// api-gateway's realtime bridge (internal/gateway/realtime) decodes this,
+// republishes it verbatim (still JSON-encoded) onto Redis pub/sub keyed by
+// UserID, and the onNotification GraphQL subscription resolver decodes it
+// a second time into the GraphQL Notification type. JobID/Score are only
+// populated for EventType == RealtimeNotificationTypeJobMatch — `omitempty`
+// keeps the welcome payload's JSON free of meaningless zero values.
+type RealtimeNotification struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Type      string    `json:"type"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+	JobID     string    `json:"job_id,omitempty"`
+	Score     float64   `json:"score,omitempty"`
+}

@@ -79,6 +79,48 @@ sends the group a clean `LeaveGroup` — this is specifically what prevents
 the zombie-consumer-group-member problem `shutdown`'s own doc comment
 warns about, now that a Kafka consumer actually exists to leave one.
 
+## cache
+
+Phase 1c's thin `go-redis/v9` wrapper, shared by skills-service/
+jobs-service (write-through response caching), api-gateway (fixed-window
+rate limiting), and — as of Phase 3.5 — api-gateway's realtime
+notification bridge and `onNotification` GraphQL subscription (Redis
+`PUBLISH`/`SUBSCRIBE`, exposed via the narrow `PubSub`/`Subscription`
+interfaces alongside the existing `Cache`/`RateLimiter` ones). Every
+method degrades gracefully exactly like `kafka`/`rabbitmq`: no
+`REDIS_URL`, or an unreachable Redis, means caching/rate-limiting/pub-sub
+are all disabled for this instance rather than the process failing to
+start.
+
+## rabbitmq
+
+Phase 3's thin `amqp091-go` wrapper. `Producer` (auth-service's
+`notifications.email`/`notifications.realtime` publishes on `Register`,
+jobs-service's on `job.matched` as of Phase 3.5) degrades gracefully like
+every other optional dependency here. `Consumer` (added in Phase 3.5,
+api-gateway's first Go-side RabbitMQ consumer — every earlier consumer in
+this codebase is NestJS/notification-service) mirrors `kafka.Consumer`'s
+shape: `Run(ctx, handler)` blocks until `ctx` is cancelled from a
+`shutdown.CleanupFunc`, then `Close()` tears down the channel/connection.
+
+`topology.go` declares the full notifications topology (DLX + DLQ +
+`notifications.email`, plus `notifications.realtime` with no DLQ — see
+that file for why) idempotently from every producer/consumer at startup,
+regardless of process start order — see `docs/DECISIONS.md`'s Phase 3
+notes for the full reasoning.
+
+**`closeTimeout` (`close.go`), discovered live, not from reading
+amqp091-go's docs:** `Producer.Close`/`Consumer.Close` bound their
+underlying `Channel.Close`/`Connection.Close` calls to 3 seconds in a
+background goroutine, because a plain unbounded `ch.Close()` on a channel
+that had an active `Consume` can hang the caller **forever** if the
+delivery-dispatch goroutine inside amqp091-go is wedged trying to push a
+delivery nobody's reading anymore — reproduced live during Phase 3.5's
+graceful-shutdown verification as api-gateway's entire `shutdown.Wait`
+sequence hanging indefinitely (confirmed via a `SIGQUIT` goroutine dump
+showing the main goroutine parked in `amqp091-go.(*Channel).call`). See
+`docs/DECISIONS.md`'s Phase 3.5 notes for the full writeup.
+
 ## jwks
 
 Two sides of the same coin. On auth-service: generate (or load from env)

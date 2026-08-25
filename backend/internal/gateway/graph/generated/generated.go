@@ -32,6 +32,7 @@ type ResolverRoot interface {
 	Mutation() MutationResolver
 	Profile() ProfileResolver
 	Query() QueryResolver
+	Subscription() SubscriptionResolver
 	UserSkill() UserSkillResolver
 }
 
@@ -68,6 +69,13 @@ type ComplexityRoot struct {
 		UpdateProfile       func(childComplexity int, displayName *string, bio *string) int
 	}
 
+	Notification struct {
+		CreatedAt func(childComplexity int) int
+		ID        func(childComplexity int) int
+		Message   func(childComplexity int) int
+		Type      func(childComplexity int) int
+	}
+
 	Profile struct {
 		Bio         func(childComplexity int) int
 		DisplayName func(childComplexity int) int
@@ -88,6 +96,10 @@ type ComplexityRoot struct {
 		Category func(childComplexity int) int
 		ID       func(childComplexity int) int
 		Name     func(childComplexity int) int
+	}
+
+	Subscription struct {
+		OnNotification func(childComplexity int) int
 	}
 
 	UserSkill struct {
@@ -123,6 +135,9 @@ type QueryResolver interface {
 	Jobs(ctx context.Context) ([]*model.Job, error)
 	Job(ctx context.Context, id string) (*model.Job, error)
 	MyProfile(ctx context.Context) (*model.Profile, error)
+}
+type SubscriptionResolver interface {
+	OnNotification(ctx context.Context) (<-chan *model.Notification, error)
 }
 type UserSkillResolver interface {
 	Skill(ctx context.Context, obj *model.UserSkill) (*model.Skill, error)
@@ -287,6 +302,31 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.ComplexityRoot.Mutation.UpdateProfile(childComplexity, args["displayName"].(*string), args["bio"].(*string)), true
 
+	case "Notification.createdAt":
+		if e.ComplexityRoot.Notification.CreatedAt == nil {
+			break
+		}
+
+		return e.ComplexityRoot.Notification.CreatedAt(childComplexity), true
+	case "Notification.id":
+		if e.ComplexityRoot.Notification.ID == nil {
+			break
+		}
+
+		return e.ComplexityRoot.Notification.ID(childComplexity), true
+	case "Notification.message":
+		if e.ComplexityRoot.Notification.Message == nil {
+			break
+		}
+
+		return e.ComplexityRoot.Notification.Message(childComplexity), true
+	case "Notification.type":
+		if e.ComplexityRoot.Notification.Type == nil {
+			break
+		}
+
+		return e.ComplexityRoot.Notification.Type(childComplexity), true
+
 	case "Profile.bio":
 		if e.ComplexityRoot.Profile.Bio == nil {
 			break
@@ -379,6 +419,13 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.ComplexityRoot.Skill.Name(childComplexity), true
 
+	case "Subscription.onNotification":
+		if e.ComplexityRoot.Subscription.OnNotification == nil {
+			break
+		}
+
+		return e.ComplexityRoot.Subscription.OnNotification(childComplexity), true
+
 	case "UserSkill.proficiency":
 		if e.ComplexityRoot.UserSkill.Proficiency == nil {
 			break
@@ -442,6 +489,23 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 			ctx = graphql.WithUnmarshalerMap(ctx, inputUnmarshalMap)
 			data := ec._Mutation(ctx, opCtx.Operation.SelectionSet)
 			var buf bytes.Buffer
+			data.MarshalGQL(&buf)
+
+			return &graphql.Response{
+				Data: buf.Bytes(),
+			}
+		}
+	case ast.Subscription:
+		next := ec._Subscription(ctx, opCtx.Operation.SelectionSet)
+
+		var buf bytes.Buffer
+		return func(ctx context.Context) *graphql.Response {
+			buf.Reset()
+			data := next(ctx)
+
+			if data == nil {
+				return nil
+			}
 			data.MarshalGQL(&buf)
 
 			return &graphql.Response{
@@ -551,6 +615,35 @@ type Profile {
   displayName: String!
   bio: String!
   skills: [UserSkill!]!
+}
+
+# Notification is Phase 3.5's realtime push payload — the GraphQL-facing
+# shape of internal/platform/rabbitmq.RealtimeNotification, deliberately
+# minimal (no jobId/score on the wire; a client that needs more detail can
+# follow up with a ` + "`" + `job(id: ...)` + "`" + ` query). See docs/DECISIONS.md for the
+# full realtime design and internal/gateway/realtime for the RabbitMQ ->
+# Redis pub/sub bridge that feeds onNotification below.
+type Notification {
+  id: ID!
+  type: String!
+  message: String!
+  createdAt: String!
+}
+
+type Subscription {
+  """
+  Streams every realtime notification published for the authenticated
+  caller (auth-service on Register, jobs-service's matching worker on
+  job.matched) for as long as the WebSocket connection stays open.
+  Requires a valid token supplied via the graphql-ws ` + "`" + `connection_init` + "`" + `
+  payload (an ` + "`" + `Authorization: Bearer <token>` + "`" + ` or ` + "`" + `token` + "`" + ` field) — there is
+  no HTTP Authorization header on a WebSocket upgrade request to reuse the
+  way every other authenticated operation in this schema does. See
+  cmd/api-gateway/main.go's wsInitFunc and docs/DECISIONS.md's Phase 3.5
+  notes for why. A connection with no valid token is rejected at
+  connection_init time, before this field is ever resolved.
+  """
+  onNotification: Notification!
 }
 
 type Mutation {
@@ -685,6 +778,20 @@ func (ec *executionContext) childFields_JobMatch(ctx context.Context, field grap
 		return ec.fieldContext_JobMatch_matchedAt(ctx, field)
 	}
 	return nil, fmt.Errorf("no field named %q was found under type JobMatch", field.Name)
+}
+
+func (ec *executionContext) childFields_Notification(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+	switch field.Name {
+	case "id":
+		return ec.fieldContext_Notification_id(ctx, field)
+	case "type":
+		return ec.fieldContext_Notification_type(ctx, field)
+	case "message":
+		return ec.fieldContext_Notification_message(ctx, field)
+	case "createdAt":
+		return ec.fieldContext_Notification_createdAt(ctx, field)
+	}
+	return nil, fmt.Errorf("no field named %q was found under type Notification", field.Name)
 }
 
 func (ec *executionContext) childFields_Profile(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
@@ -1651,6 +1758,98 @@ func (ec *executionContext) fieldContext_Mutation_addUserSkill(ctx context.Conte
 	return fc, nil
 }
 
+func (ec *executionContext) _Notification_id(ctx context.Context, field graphql.CollectedField, obj *model.Notification) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Notification_id(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.ID, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNID2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Notification_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("Notification", field, false, false, errors.New("field of type ID does not have child fields"))
+}
+
+func (ec *executionContext) _Notification_type(ctx context.Context, field graphql.CollectedField, obj *model.Notification) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Notification_type(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Type, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Notification_type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("Notification", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _Notification_message(ctx context.Context, field graphql.CollectedField, obj *model.Notification) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Notification_message(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Message, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Notification_message(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("Notification", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _Notification_createdAt(ctx context.Context, field graphql.CollectedField, obj *model.Notification) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Notification_createdAt(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.CreatedAt, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Notification_createdAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("Notification", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
 func (ec *executionContext) _Profile_userId(ctx context.Context, field graphql.CollectedField, obj *model.Profile) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -2102,6 +2301,38 @@ func (ec *executionContext) _Skill_category(ctx context.Context, field graphql.C
 }
 func (ec *executionContext) fieldContext_Skill_category(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	return graphql.NewScalarFieldContext("Skill", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _Subscription_onNotification(ctx context.Context, field graphql.CollectedField) (ret func(ctx context.Context) graphql.Marshaler) {
+	return graphql.ResolveFieldStream(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Subscription_onNotification(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return ec.Resolvers.Subscription().OnNotification(ctx)
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v *model.Notification) graphql.Marshaler {
+			return ec.marshalNNotification2ᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐNotification(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Subscription_onNotification(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Subscription",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.childFields_Notification(ctx, field)
+		},
+	}
+	return fc, nil
 }
 
 func (ec *executionContext) _UserSkill_skill(ctx context.Context, field graphql.CollectedField, obj *model.UserSkill) (ret graphql.Marshaler) {
@@ -3531,6 +3762,59 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 	return out
 }
 
+var notificationImplementors = []string{"Notification"}
+
+func (ec *executionContext) _Notification(ctx context.Context, sel ast.SelectionSet, obj *model.Notification) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, notificationImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferredFieldSet := graphql.NewFieldSet(nil)
+	deferLabelToView := make(map[string]*graphql.FieldSetView)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("Notification")
+		case "id":
+			out.Values[i] = ec._Notification_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "type":
+			out.Values[i] = ec._Notification_type(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "message":
+			out.Values[i] = ec._Notification_message(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "createdAt":
+			out.Values[i] = ec._Notification_createdAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.Deferred, int32(min(len(deferLabelToView), math.MaxInt32)))
+
+	ec.ProcessDeferredGroup(graphql.DeferredGroup{
+		Defers:   deferLabelToView,
+		Path:     graphql.GetPath(ctx),
+		FieldSet: deferredFieldSet,
+		Context:  ctx,
+	})
+
+	return out
+}
+
 var profileImplementors = []string{"Profile"}
 
 func (ec *executionContext) _Profile(ctx context.Context, sel ast.SelectionSet, obj *model.Profile) graphql.Marshaler {
@@ -3850,6 +4134,26 @@ func (ec *executionContext) _Skill(ctx context.Context, sel ast.SelectionSet, ob
 	})
 
 	return out
+}
+
+var subscriptionImplementors = []string{"Subscription"}
+
+func (ec *executionContext) _Subscription(ctx context.Context, sel ast.SelectionSet) func(ctx context.Context) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, subscriptionImplementors)
+	ctx = graphql.WithFieldContext(ctx, &graphql.FieldContext{
+		Object: "Subscription",
+	})
+	if len(fields) != 1 {
+		graphql.AddErrorf(ctx, "must subscribe to exactly one stream")
+		return nil
+	}
+
+	switch fields[0].Name {
+	case "onNotification":
+		return ec._Subscription_onNotification(ctx, fields[0])
+	default:
+		panic("unknown field " + strconv.Quote(fields[0].Name))
+	}
 }
 
 var userSkillImplementors = []string{"UserSkill"}
@@ -4465,6 +4769,20 @@ func (ec *executionContext) marshalNJobMatch2ᚖgithubᚗcomᚋSiddsharma25ᚋsk
 		return graphql.Null
 	}
 	return ec._JobMatch(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNNotification2githubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐNotification(ctx context.Context, sel ast.SelectionSet, v model.Notification) graphql.Marshaler {
+	return ec._Notification(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNNotification2ᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐNotification(ctx context.Context, sel ast.SelectionSet, v *model.Notification) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			graphql.AddErrorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._Notification(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalNProfile2githubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐProfile(ctx context.Context, sel ast.SelectionSet, v model.Profile) graphql.Marshaler {

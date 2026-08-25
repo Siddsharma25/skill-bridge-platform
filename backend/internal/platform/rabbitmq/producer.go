@@ -116,15 +116,24 @@ func (p *Producer) Publish(ctx context.Context, queue string, body []byte) {
 }
 
 // Close closes the underlying channel and connection. Safe to call on a
-// disabled Producer.
+// disabled Producer. Bounded by closeTimeout — see that constant's doc
+// comment (in consumer.go) for the real hang this codebase hit live on
+// the consumer side of this same package, and why an unbounded Close on
+// a RabbitMQ channel/connection can wedge an entire process's shutdown
+// sequence rather than just this one Close call. A pure producer channel
+// (no active Consume) is less likely to hit that exact wedge, but the fix
+// costs nothing here and keeps both Close paths in this package equally
+// safe rather than one of them being an accident away from the same bug.
 func (p *Producer) Close() {
 	if p == nil {
 		return
 	}
-	if p.ch != nil {
-		_ = p.ch.Close()
-	}
-	if p.conn != nil {
-		_ = p.conn.Close()
-	}
+	closeWithTimeout(func() {
+		if p.ch != nil {
+			_ = p.ch.Close()
+		}
+		if p.conn != nil {
+			_ = p.conn.Close()
+		}
+	}, p.log, "producer")
 }

@@ -12,11 +12,17 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/handler/extension"
+	"github.com/99designs/gqlgen/graphql/handler/lru"
+	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/joho/godotenv"
+	"github.com/vektah/gqlparser/v2/ast"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -32,10 +38,12 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/generated"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/ratelimit"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/realtime"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/cache"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/health"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/jwks"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
 )
@@ -154,8 +162,42 @@ func main() {
 		SkillsClient: skillsClient,
 		UsersClient:  usersClient,
 		JobsClient:   jobsClient,
+		// Realtime backs the onNotification subscription (Phase 3.5) —
+		// see internal/gateway/graph/schema.resolvers.go and
+		// internal/gateway/realtime. Reuses the same Redis connection
+		// rate limiting already established above; a disabled redisClient
+		// (REDIS_URL unset/unreachable) just means the subscription
+		// reports "unavailable" instead of streaming, same
+		// degrade-gracefully convention as everywhere else.
+		Realtime: redisClient,
 	}
-	srv := handler.NewDefaultServer(generated.NewExecutableSchema(generated.Config{Resolvers: resolver}))
+	// handler.New (not the deprecated NewDefaultServer) is used
+	// specifically so the WebSocket transport can be configured with
+	// wsInitFunc below — NewDefaultServer already registers its own
+	// unauthenticated transport.Websocket{}, and graphql.Transport
+	// selection picks the *first* transport whose Supports(r) matches
+	// (see gqlgen's Server.getTransport), so an unauthenticated one added
+	// first would shadow ours forever. This block otherwise mirrors
+	// NewDefaultServer's body exactly (same cache sizes, same
+	// extensions) — see that function's implementation in
+	// github.com/99designs/gqlgen/graphql/handler for reference.
+	srv := handler.New(generated.NewExecutableSchema(generated.Config{Resolvers: resolver}))
+	srv.AddTransport(transport.Websocket{
+		// InitFunc runs once per WebSocket connection, on that
+		// connection's graphql-ws `connection_init` message — see
+		// wsInitFunc's doc comment and docs/DECISIONS.md's Phase 3.5
+		// notes for why WS auth can't reuse authctx.Middleware's
+		// Authorization-header path.
+		InitFunc:              wsInitFunc(jwksClient, log),
+		KeepAlivePingInterval: 10 * time.Second,
+	})
+	srv.AddTransport(transport.Options{})
+	srv.AddTransport(transport.GET{})
+	srv.AddTransport(transport.POST{})
+	srv.AddTransport(transport.MultipartForm{})
+	srv.SetQueryCache(lru.New[*ast.QueryDocument](1000))
+	srv.Use(extension.Introspection{})
+	srv.Use(extension.AutomaticPersistedQuery{Cache: lru.New[string](100)})
 
 	mux := health.Mux(func(ctx context.Context) error {
 		// api-gateway has no database of its own; readiness here means
@@ -203,6 +245,35 @@ func main() {
 		),
 	))
 
+	// Phase 3.5: api-gateway's first RabbitMQ consumer (every earlier use
+	// of RabbitMQ in this codebase was a producer — auth-service
+	// publishing notifications.email). Consumes notifications.realtime
+	// (published by auth-service's Register and jobs-service's matching
+	// worker — see internal/platform/rabbitmq) and republishes each
+	// message onto Redis pub/sub via internal/gateway/realtime.Bridge, for
+	// whichever gateway replica holds the matching user's live
+	// onNotification subscription to pick up. Degrades gracefully, same
+	// pattern as every other optional dependency: a missing/unreachable
+	// RABBITMQ_URL just means this instance doesn't relay realtime
+	// notifications, logged clearly, not a startup failure.
+	realtimeBridge := realtime.NewBridge(redisClient, log)
+	realtimeConsumerCtx, cancelRealtimeConsumer := context.WithCancel(context.Background())
+	var realtimeConsumerWG sync.WaitGroup
+	realtimeConsumer, err := rabbitmq.NewConsumerFromEnv(os.Getenv, rabbitmq.QueueNotificationsRealtime, log)
+	if err != nil {
+		log.Warn("rabbitmq realtime consumer not started; onNotification will not receive live pushes on this instance",
+			zap.Error(err))
+	} else {
+		realtimeConsumerWG.Add(1)
+		go func() {
+			defer realtimeConsumerWG.Done()
+			log.Info("rabbitmq realtime consumer starting", zap.String("queue", rabbitmq.QueueNotificationsRealtime))
+			if runErr := realtimeConsumer.Run(realtimeConsumerCtx, realtimeBridge.Handler()); runErr != nil {
+				log.Error("rabbitmq realtime consumer stopped with error", zap.Error(runErr))
+			}
+		}()
+	}
+
 	httpServer := &http.Server{
 		Addr:              ":" + httpPort,
 		Handler:           mux,
@@ -219,6 +290,46 @@ func main() {
 		Logger:      log,
 		HTTPServers: []*http.Server{httpServer},
 		Cleanups: []shutdown.CleanupFunc{
+			// Stop the realtime consumer goroutine first (cancel its
+			// context, wait for Run to return) before closing its
+			// underlying connection — same "stop accepting work before
+			// tearing down what it depends on" ordering as
+			// cmd/jobs-service/main.go's Kafka consumer shutdown, and what
+			// avoids a zombie in-flight message getting nacked into a
+			// closed channel.
+			//
+			// Note what this does NOT do: an open onNotification
+			// WebSocket connection is not itself told to close here.
+			// net/http's own Shutdown doc comment is explicit that it
+			// "does not attempt to close nor wait for hijacked
+			// connections such as WebSockets" — httpServer.Shutdown
+			// (called just above, before these Cleanups run) returns
+			// without cancelling that connection's request context, so a
+			// live subscription's forwarding goroutine
+			// (schema.resolvers.go's OnNotification) keeps running until
+			// either the client disconnects on its own or this process
+			// actually exits (which severs every remaining connection
+			// regardless). This is a known, accepted gap — see
+			// docs/DECISIONS.md's Phase 3.5 notes — consistent with this
+			// codebase's existing "no reconnect/graceful-notify
+			// machinery" stance elsewhere.
+			//
+			// What DOES need bounding here, discovered live (see
+			// docs/DECISIONS.md): Consumer.Close's underlying
+			// amqp091-go Channel.Close call can itself hang indefinitely
+			// in some circumstances — internal/platform/rabbitmq's
+			// closeTimeout is what guarantees this step (and therefore
+			// this whole shutdown sequence) makes bounded progress
+			// regardless.
+			func(_ context.Context) error {
+				cancelRealtimeConsumer()
+				realtimeConsumerWG.Wait()
+				return nil
+			},
+			func(_ context.Context) error {
+				realtimeConsumer.Close()
+				return nil
+			},
 			func(_ context.Context) error {
 				return authConn.Close()
 			},
@@ -245,9 +356,82 @@ func isTransportError(err error) bool {
 	return status.Code(err) == codes.Unavailable
 }
 
+// closeCodeUnauthorized is the graphql-ws protocol's own recommended
+// WebSocket close code for a connection_init that fails authentication —
+// see wsInitFunc.
+const closeCodeUnauthorized = 4401
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
+}
+
+// wsInitFunc authenticates a WebSocket connection at graphql-ws's
+// `connection_init` step (Phase 3.5) — the WebSocket-transport
+// counterpart to authctx.Middleware's HTTP `Authorization: Bearer <token>`
+// header parsing above. A WebSocket upgrade request doesn't naturally
+// carry a bearer header on every subsequent message the way HTTP does, so
+// the graphql-ws protocol instead has the client send auth once, in the
+// `connection_init` message's payload; gqlgen's transport.Websocket calls
+// this exactly once per connection, before any `subscribe` message on
+// that connection is accepted.
+//
+// Accepts the token under either "Authorization" (optionally prefixed
+// "Bearer ", matching the HTTP convention most graphql-ws clients — the
+// npm graphql-ws library, Apollo, urql — already follow for their
+// connectionParams) or a bare "token" key, for a client that would rather
+// not spoof an HTTP-style header inside a JSON payload.
+//
+// Unlike authctx.Middleware — which never rejects an HTTP request itself,
+// leaving that to each resolver's requireUserID, since /query serves both
+// authenticated and unauthenticated operations — a WebSocket connection
+// with no valid token is rejected here outright: a non-nil error return
+// makes gqlgen close the socket rather than send a connection_ack (see
+// gqlgen's wsConnection.init). Unlike /query, every use of this WebSocket
+// endpoint today is the onNotification subscription, which always
+// requires an authenticated caller, so there is no unrelated
+// "unauthenticated but otherwise valid" case to preserve here the way
+// there is for a mixed HTTP endpoint.
+//
+// closeCodeUnauthorized (4401, the graphql-ws protocol's own recommended
+// "Unauthorized" code — see
+// https://github.com/enisdenjo/graphql-ws/blob/master/PROTOCOL.md) is set
+// on the returned context via transport.WithWebsocketCloseCode so a real
+// client can distinguish "you rejected my auth" from an ordinary closure.
+// Note this only reaches the wire under the modern `graphql-transport-ws`
+// subprotocol's raw WebSocket close frame; under the legacy `graphql-ws`
+// subprotocol gqlgen also sends a connection_error message first (see
+// graphqlwsMessageExchanger.fromMessage vs.
+// graphqltransportwsMessageExchanger.fromMessage, where the latter treats
+// connectionErrorMessageType as a no-op and relies on the close code
+// alone) — either way, a rejected connection never reaches connection_ack.
+//
+// The context returned becomes this connection's base context for every
+// subscription made over it (see gqlgen's wsConnection.ctx) — a single
+// wsConnection struct exists per accepted WebSocket, so this verified
+// identity can never leak into a different connection's context; each
+// connection gets its own InitFunc call and its own derived context.
+func wsInitFunc(jwksClient *jwks.Client, log *zap.Logger) transport.WebsocketInitFunc {
+	return func(ctx context.Context, initPayload transport.InitPayload) (context.Context, *transport.InitPayload, error) {
+		raw := initPayload.Authorization()
+		if raw == "" {
+			raw = initPayload.GetString("token")
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(raw, "Bearer "))
+		if token == "" {
+			return transport.WithWebsocketCloseCode(ctx, closeCodeUnauthorized), nil,
+				fmt.Errorf("authentication required: connection_init payload must include an Authorization (or token) field")
+		}
+
+		userID, err := authctx.VerifyToken(ctx, jwksClient, token)
+		if err != nil {
+			log.Debug("rejecting websocket connection: invalid token", zap.Error(err))
+			return transport.WithWebsocketCloseCode(ctx, closeCodeUnauthorized), nil,
+				fmt.Errorf("authentication required: invalid token")
+		}
+
+		return authctx.NewContext(ctx, userID), nil, nil
+	}
 }

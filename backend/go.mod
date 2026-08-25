@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/99designs/gqlgen v0.17.94
+	github.com/coder/websocket v1.8.15
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/graph-gophers/dataloader/v7 v7.2.0
@@ -26,7 +27,6 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect

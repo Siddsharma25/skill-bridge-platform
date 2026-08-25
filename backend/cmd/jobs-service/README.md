@@ -63,6 +63,21 @@ All three degrade gracefully like every other external dependency in this
 codebase: if `KAFKA_BROKERS` is unset, each just doesn't start (logged
 clearly), rather than the process failing to start.
 
+## Phase 3.5: a realtime ping alongside `job.matched`
+
+The matching worker's `HandleJobPosted` (`internal/jobs/matcher.go`) also
+publishes a best-effort `RealtimeNotification` (type `job_match`) to
+RabbitMQ's `notifications.realtime` queue for every user it matches,
+right alongside its existing Kafka `job.matched` publish — jobs-service's
+first use of RabbitMQ (a new `rabbitmq.Producer`, wired in
+`cmd/jobs-service/main.go` the same way auth-service already uses one).
+api-gateway consumes that queue and relays it to any live `onNotification`
+GraphQL subscription for the matched user — see
+`cmd/api-gateway/README.md` and `docs/DECISIONS.md`'s Phase 3.5 notes for
+the full flow, and for why this publish (not auth-service's
+registration-time one) is what Phase 3.5's live verification actually
+relies on.
+
 ## Why required_skill_ids aren't resolved to names here
 
 `required_skill_ids` are opaque skills-service IDs — jobs-service's

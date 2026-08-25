@@ -9,7 +9,17 @@ verified JWT instead of asking auth-service to re-check anything.
 
 - `Register(email, password)` — hashes the password with bcrypt, inserts
   a row into `auth.credentials`, and returns an access token immediately
-  (so a client can skip a second `Login` call right after signup).
+  (so a client can skip a second `Login` call right after signup). Also
+  publishes two best-effort RabbitMQ events after the account is durably
+  created (neither can fail `Register`): `notifications.email` (Phase 3,
+  consumed by notification-service) and `notifications.realtime` (Phase
+  3.5, consumed by api-gateway's realtime bridge and relayed to a live
+  `onNotification` GraphQL subscription — see
+  `cmd/api-gateway/README.md`). The realtime one is architecturally
+  complete but **not** this project's live-verification trigger for the
+  subscription — see `docs/DECISIONS.md`'s Phase 3.5 notes for why
+  (registration happens before a client could possibly have a token to
+  subscribe with).
 - `Login(email, password)` — verifies the bcrypt hash and returns a fresh
   access token.
 - Serves its own JWKS document at `/.well-known/jwks.json` so any verifier
