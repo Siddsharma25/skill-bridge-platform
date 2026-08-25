@@ -32,6 +32,16 @@ make gen
 go run ./cmd/auth-service
 ```
 
+**Full stack via Docker** (Phase 4 — all 6 backend services + Redis/Kafka/RabbitMQ, one clean-checkout `up`)
+```
+cp docker/.env.example docker/.env   # fill in real DATABASE_URL values first
+cd backend && make up-full
+```
+See `backend/README.md`'s "Running the full stack via Docker" section and
+`docs/DECISIONS.md`'s Phase 4 notes for what's actually wired up, how
+`DATABASE_URL` is supplied, and what's still deliberately out of scope
+(no local Postgres container — single shared Supabase instance by design).
+
 ## Status
 
 This is being built incrementally, phase by phase — see `docs/DECISIONS.md` for what's live versus in progress. Production deployment is intentionally a trimmed-down subset of the full local/learning architecture (no Kafka/RabbitMQ in production); that gap is documented, not accidental.

@@ -77,28 +77,58 @@ services:
     image: apache/kafka:3.9.0
     container_name: sbp-kafka
     ports:
-      - "9092:9092"
+      - "29092:29092"
     environment:
       # KRaft: this one broker is also the controller (no Zookeeper).
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      # One PLAINTEXT listener (plus the KRaft-only CONTROLLER one), bound
-      # on every interface inside the container (bare `:9092`, not
-      # `0.0.0.0:9092` — the broker's own advertised-listener validation
-      # rejects `0.0.0.0` as a "nonroutable meta-address," a gotcha hit
-      # during this phase's live verification) and advertised as
-      # `localhost:9092`. Backend services running on the host (`go run`,
-      # not containerized — see docker-compose.yml's Phase 4 note) and
-      # local tools run from a shell inside the container (`kafka-topics.sh`
-      # etc.) both reach the broker the same way: `localhost:9092`, which
-      # works from the host because the port is published 1:1 below, and
-      # from inside the container because that's the advertised address.
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # TWO plaintext listeners (plus the KRaft-only CONTROLLER one) as of
+      # Phase 4 — bound on every interface inside the container (bare
+      # `:PORT`, not `0.0.0.0:PORT` — the broker's own advertised-listener
+      # validation rejects `0.0.0.0` as a "nonroutable meta-address," a
+      # gotcha hit during Phase 2's live verification).
+      #
+      # Phase 2/3/3.5 only ever needed ONE listener, advertised as
+      # `localhost:9092`, because every client back then (backend services
+      # via `go run`, `kafka-topics.sh` from a shell inside this container)
+      # reached the broker from the host's network namespace or from
+      # inside this same container — both satisfied by one address.
+      #
+      # Phase 4 breaks that assumption: skills-service/users-service/
+      # jobs-service now also run AS CONTAINERS on this compose network,
+      # and need to reach Kafka by its service name (`kafka:9092`), not
+      # `localhost:9092` — discovered as a real, live hang during this
+      # phase's verification, not anticipated in advance. A container's
+      # franz-go client establishes its seed connection to `kafka:9092`
+      # fine (Docker DNS resolves the service name), but the broker's
+      # first Metadata response — telling the client which address to send
+      # the actual Produce request to — said `localhost:9092`, which
+      # inside a container resolves to that container itself, not Kafka.
+      # `ProduceSync` then blocked forever (bounded only by the caller's
+      # own context deadline, if any) retrying against an address nothing
+      # is listening on — every `createSkill`/`createJob`/`addUserSkill`
+      # call hung indefinitely with no server-side error logged, since the
+      # underlying retry loop never itself failed. See docs/DECISIONS.md's
+      # Phase 4 notes for the full live diagnosis (confirmed via a direct
+      # `grpcurl` call bypassing the gateway entirely, and via the Postgres
+      # row landing successfully while the RPC never returned — proving
+      # the hang was specifically the post-write Kafka publish, not the
+      # write itself).
+      #
+      # Fix: two listeners, each advertised correctly for its own network
+      # namespace — INTERNAL for anything on the compose network
+      # (advertised as the service name), EXTERNAL for anything reaching
+      # the published host port (advertised as localhost, now on 29092
+      # since 9092 is the INTERNAL listener's in-container port and isn't
+      # published — a host process, e.g. `go run ./cmd/skills-service`
+      # outside Docker, sets KAFKA_BROKERS=localhost:29092, per
+      # backend/.env.example).
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       # Single broker: replication/ISR factors of 1 everywhere, same
       # "no broker HA at this scale" reasoning as Redis/RabbitMQ
       # elsewhere in this project (see docs/DECISIONS.md's Scope Cuts).
@@ -109,6 +139,11 @@ services:
     volumes:
       - kafka-data:/tmp/kraft-combined-logs
     healthcheck:
+      # Runs from inside this container, against the INTERNAL listener
+      # (still bound on :9092 in-container) — unaffected by the
+      # EXTERNAL/INTERNAL advertised-address split above, since this is a
+      # direct local connection, not a client resolving a partition
+      # leader's address from a Metadata response.
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
@@ -128,7 +163,10 @@ services:
   # auth-service's producer and notification-service's consumer at
   # startup (see internal/platform/rabbitmq/topology.go), the same
   # "created by the app, not pre-provisioned by infra" choice this file
-  # already makes for Kafka topics above.
+  # already makes for Kafka topics above. Unlike Kafka, RabbitMQ has no
+  # advertised-address concept for AMQP — every client (host or
+  # containerized) just dials `<host>:5672` directly, so no dual-listener
+  # split was needed here for Phase 4.
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: sbp-rabbitmq

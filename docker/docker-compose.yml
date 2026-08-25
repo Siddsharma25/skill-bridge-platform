@@ -1,0 +1,247 @@
+# docker/docker-compose.yml — Phase 4: the 6 application services (auth,
+# skills, users, jobs, api-gateway — all Go; notification-service — NestJS)
+# layered on top of docker-compose.infra.yml's Redis/Kafka/RabbitMQ, which
+# has existed since Phase 1a/2/3 and is NOT recreated here. See
+# docs/DECISIONS.md's "Phase 4 implementation notes" for the full writeup.
+#
+# Usage (from backend/, matching docker-compose.infra.yml's own `make up`
+# convention — see backend/Makefile's `up-full`/`down-full`/`nuke-full`):
+#
+#   docker compose --env-file ../docker/.env \
+#     -f ../docker/docker-compose.infra.yml -f ../docker/docker-compose.yml \
+#     up -d --build
+#
+# Or equivalently from the repo root:
+#
+#   docker compose --env-file docker/.env \
+#     -f docker/docker-compose.infra.yml -f docker/docker-compose.yml \
+#     up -d --build
+#
+# Passing multiple -f files merges them into ONE compose project (last file
+# wins on any key collision; there are none here). This only shares one
+# default network/volume namespace automatically if neither file declares a
+# *conflicting* top-level `networks:`/`volumes:` block — verified by
+# inspecting docker-compose.infra.yml: it declares `volumes:` (redis-data,
+# kafka-data, rabbitmq-data) but no top-level `networks:` at all, so both
+# files fall back to Compose's one implicit default bridge network for the
+# merged project. Every service below reaches redis/kafka/rabbitmq (and
+# each other) by plain service name on that shared network — no explicit
+# `networks:` block was needed here either.
+#
+# --- DATABASE_URL: why `${...}` substitution, not the `env_file:` keyword ---
+# This project is schema-per-service with a distinct Postgres role per
+# service (see docs/DECISIONS.md and migrations/000_bootstrap.sql) — each
+# of the 5 database-backed services below needs its OWN DATABASE_URL value,
+# not one shared value. Compose's `env_file:` keyword injects one file's
+# keys verbatim into a container's environment, which can't fan one
+# `DATABASE_URL=...` line out into 5 different values. Instead, docker/.env
+# (gitignored; copy docker/.env.example) defines distinctly-named variables
+# (AUTH_DATABASE_URL, SKILLS_DATABASE_URL, USERS_DATABASE_URL,
+# JOBS_DATABASE_URL, NOTIFICATION_DATABASE_URL) and each service below maps
+# its own into the container's plain `DATABASE_URL` env var via `${...}`
+# interpolation — resolved by Compose itself at parse time from whatever
+# env-file the `--env-file` flag points at, which is why that flag (not the
+# default project-directory `.env` lookup, ambiguous here since this repo
+# invokes compose from `backend/` while the files live in `docker/`) is
+# part of the documented invocation above. A real Supabase URL can be
+# dropped into docker/.env later without touching this file at all — the
+# actual point of the plan's "sourced from an env var/.env file at the
+# compose invocation level" requirement.
+#
+# No local Postgres service is defined anywhere in this file (or in
+# docker-compose.infra.yml) — see that file's own comment and
+# docs/DECISIONS.md: this project uses one shared Supabase instance via
+# DATABASE_URL, not a container-per-service database. For local
+# verification of this compose stack before a real Supabase project is
+# wired up, spin up a throwaway `postgres:16-alpine` with a plain
+# `docker run` OUTSIDE these compose files (same approach every earlier
+# phase's agent used for its own local verification) and point
+# docker/.env's *_DATABASE_URL vars at it via `host.docker.internal`
+# (Docker Desktop resolves this to the host automatically) — see
+# docker/.env.example's own comment for the exact recipe.
+
+services:
+  auth-service:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.auth-service
+    container_name: sbp-auth-service
+    environment:
+      ENV: production
+      PORT: "9001"
+      HTTP_PORT: "8081"
+      DATABASE_URL: ${AUTH_DATABASE_URL:-}
+      JWT_ISSUER: skill-bridge-platform/auth-service
+      JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:-}
+      JWT_KID: ${JWT_KID:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URL: ${GOOGLE_OAUTH_REDIRECT_URL:-}
+      # auth-service does not use Redis or Kafka (see backend/.env.example:
+      # REDIS_URL is only consumed by skills-service/jobs-service/
+      # api-gateway; KAFKA_BROKERS only by users-service/skills-service/
+      # jobs-service). It publishes to RabbitMQ only.
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "9001:9001"
+      - "8081:8081"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  skills-service:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.skills-service
+    container_name: sbp-skills-service
+    environment:
+      ENV: production
+      PORT: "9002"
+      HTTP_PORT: "8082"
+      DATABASE_URL: ${SKILLS_DATABASE_URL:-}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: kafka:9092
+    ports:
+      - "9002:9002"
+      - "8082:8082"
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  users-service:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.users-service
+    container_name: sbp-users-service
+    environment:
+      ENV: production
+      PORT: "9003"
+      HTTP_PORT: "8083"
+      DATABASE_URL: ${USERS_DATABASE_URL:-}
+      # users-service publishes user.skills.updated to Kafka; it does not
+      # use Redis or RabbitMQ at all.
+      KAFKA_BROKERS: kafka:9092
+    ports:
+      - "9003:9003"
+      - "8083:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  jobs-service:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.jobs-service
+    container_name: sbp-jobs-service
+    environment:
+      ENV: production
+      PORT: "9004"
+      HTTP_PORT: "8084"
+      DATABASE_URL: ${JOBS_DATABASE_URL:-}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: kafka:9092
+      # jobs-service's matching worker also publishes a best-effort realtime
+      # ping to notifications.realtime (Phase 3.5) — its only RabbitMQ use.
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "9004:9004"
+      - "8084:8084"
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.api-gateway
+    container_name: sbp-api-gateway
+    environment:
+      ENV: production
+      PORT: "8080"
+      # api-gateway holds no database connection of its own (stateless
+      # edge) — no DATABASE_URL here, matching backend/.env.example.
+      REDIS_URL: redis://redis:6379/0
+      # Consumes notifications.realtime and republishes onto the Redis
+      # pub/sub above (Phase 3.5's realtime.Bridge) — its only RabbitMQ use.
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      # Reach the other 4 Go services by their compose service name, not
+      # localhost — containers on the same compose network resolve each
+      # other by service name.
+      AUTH_SERVICE_ADDR: auth-service:9001
+      AUTH_SERVICE_JWKS_URL: http://auth-service:8081/.well-known/jwks.json
+      SKILLS_SERVICE_ADDR: skills-service:9002
+      USERS_SERVICE_ADDR: users-service:9003
+      JOBS_SERVICE_ADDR: jobs-service:9004
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-}
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      # Plain service_started (the default when no `condition:` is given):
+      # none of these four Go services has a container-level HEALTHCHECK
+      # (see the note below on why not), and every one of them degrades
+      # gracefully — starts, serves health checks, returns Unavailable —
+      # when a peer isn't ready yet, so api-gateway coming up before they're
+      # fully warm is a known, accepted, already-handled condition, not a
+      # startup hazard worth a `service_healthy` gate that doesn't exist to
+      # gate on.
+      auth-service:
+        condition: service_started
+      skills-service:
+        condition: service_started
+      users-service:
+        condition: service_started
+      jobs-service:
+        condition: service_started
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: ../backend/notification-service
+    container_name: sbp-notification-service
+    environment:
+      ENV: production
+      HTTP_PORT: "8085"
+      LOG_LEVEL: info
+      DATABASE_URL: ${NOTIFICATION_DATABASE_URL:-}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "8085:8085"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+# Why no app service here has a Docker-level HEALTHCHECK (and therefore why
+# api-gateway's depends_on above uses plain service_started for the other
+# four Go services rather than service_healthy): every Go service's final
+# image stage is gcr.io/distroless/static:nonroot (see Dockerfile.<service>)
+# — no shell, no curl/wget, not even libc — so a `CMD-SHELL`/`CMD wget ...`
+# HEALTHCHECK instruction has nothing to execute inside the container.
+# Building one would mean teaching each service's binary a new self-check
+# mode (e.g. a `--healthcheck` flag hitting its own /healthz) purely for
+# this compose file's benefit — real application code, out of scope for a
+# phase whose brief is explicitly "assemble what's already built," not "add
+# new application features." notification-service's node:22-alpine image
+# does have a shell, but wasn't given a HEALTHCHECK either, for consistency
+# with the other five services and because docker-compose ps already
+# reports its running/exited state without one. All 6 app services'
+# liveness/readiness remain externally checkable exactly as documented in
+# each service's own README: `curl localhost:<http_port>/healthz` /
+# `/readyz`, and `grpcurl -plaintext localhost:<grpc_port> list` for the
+# four Go services' gRPC surface — see docs/DECISIONS.md's Phase 4 notes
+# for how this was actually exercised.
