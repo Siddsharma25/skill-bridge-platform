@@ -16,7 +16,7 @@ Every document in this repo, organized by what you're trying to do. Start with t
 ## Project-wide
 
 - [`README.md`](../README.md) — repo layout, quick-start commands for frontend/backend/full Docker stack, and a "Deploying" summary (the detailed version lives in `docs/DEPLOYMENT.md`).
-- [`docs/PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md) — what the product does in plain terms: registration, skills, job postings, matching, notifications. What's real vs. simulated (no real email is sent, matching is simple overlap scoring, no roles yet). How to actually exercise it via the GraphQL API today, since there's no frontend UI yet.
+- [`docs/PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md) — what the product does in plain terms: registration, skills, job postings, matching, notifications. What's real vs. simulated (no real email is sent, matching is simple overlap scoring, no roles yet). Register/login/profile now have a real frontend UI (see `frontend/README.md`); everything else is still exercised via the GraphQL API directly.
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — the whole system at a glance: a diagram, a tech-stack table per component, how every piece talks to every other (gRPC/Kafka/RabbitMQ/Redis), how components work independently vs. as a system, what's not wired up yet, and an honest accounting of current unit test coverage.
 - [`docs/RUNNING_LOCALLY.md`](RUNNING_LOCALLY.md) — every way to run this project, from fastest (frontend alone, one backend service) to heaviest (full Docker stack, local Kubernetes via `kind`, local Jenkins) — with a table pointing you at the right one for what you're doing.
 - [`docs/DECISIONS.md`](DECISIONS.md) — the architecture bible. Every non-obvious choice across all 11 build phases (0 through 7), with the reasoning and trade-off behind each one, plus a running log of real bugs found and fixed along the way (Kafka's advertised-listener gotcha, k8s operator version drift, a NestJS lifecycle race, a JCasC schema mismatch, and more). Read the top-level sections for the "why" behind the system; read a specific "Phase N implementation notes" section for exactly how that phase was built and verified.
@@ -46,4 +46,5 @@ Every document in this repo, organized by what you're trying to do. Start with t
 
 ## Frontend (`frontend/`)
 
-- [`frontend/CLAUDE.md`](../frontend/CLAUDE.md) — Node version requirement, path aliases, shadcn/ui conventions. There's no `frontend/README.md` yet since the frontend itself is still an unwired scaffold — see `docs/PROJECT_OVERVIEW.md`'s "where this is headed."
+- [`frontend/README.md`](../frontend/README.md) — what's actually wired up (register/login/profile, so far), the GraphQL client/auth-store/protected-route pattern, the `login`-doesn't-return-`userId` gotcha and how the client works around it, and known gaps (no tests, no Google OAuth UI yet).
+- [`frontend/CLAUDE.md`](../frontend/CLAUDE.md) — Node version requirement, path aliases, shadcn/ui conventions.

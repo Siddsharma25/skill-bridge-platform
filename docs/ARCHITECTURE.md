@@ -7,7 +7,7 @@ What exists, what it's built with, and how every piece talks to every other piec
 ```mermaid
 flowchart TB
     subgraph client["Client"]
-        FE["frontend/ (React + Vite)\nnot yet wired to the API"]
+        FE["frontend/ (React + Vite)\nauth wired to the API; other features not yet"]
     end
 
     subgraph gw["api-gateway (Go)"]
@@ -28,7 +28,7 @@ flowchart TB
     KAFKA[["Kafka\ndomain events"]]
     RABBIT[["RabbitMQ\ntask queues"]]
 
-    FE -.->|"not yet built"| GQL
+    FE -->|"register/login/myProfile"| GQL
     GQL -->|gRPC| AUTH
     GQL -->|gRPC| USERS
     GQL -->|gRPC| SKILLS
@@ -56,7 +56,7 @@ flowchart TB
 
 | Component | Stack | Talks to the rest of the system via |
 |---|---|---|
-| `frontend/` | React 19, Vite, TypeScript, Tailwind, shadcn/ui, TanStack Query, Zustand, React Hook Form, Zod, React Router | Nothing yet — see "What's not wired up" below |
+| `frontend/` | React 19, Vite, TypeScript, Tailwind, shadcn/ui, TanStack Query, Zustand, React Hook Form, Zod, React Router | GraphQL over plain `fetch` (`src/lib/graphql-client.ts`, no Apollo/urql) — currently only register/login/myProfile; see "What's not wired up" below |
 | `api-gateway` | Go, `gqlgen` (GraphQL), `graphql-ws` (subscriptions), `golang-jwt`/JWKS client | gRPC (out, to the 4 services) · Redis (cache/rate-limit/pub-sub) · RabbitMQ (consumes `notifications.realtime`) |
 | `auth-service` | Go, GORM, bcrypt, `golang-jwt` (RS256), `golang.org/x/oauth2` | gRPC (in, from gateway) · Postgres (`auth` schema) · Kafka (publishes `user.registered`) · RabbitMQ (publishes `notifications.email`, `notifications.realtime`) |
 | `users-service` | Go, GORM | gRPC (in) · Postgres (`users` schema) · Kafka (publishes `user.skills.updated`) |
@@ -78,7 +78,7 @@ This is the single most important architectural property to understand:
 
 ## What's not wired up yet
 
-- **The frontend doesn't call the backend at all.** `frontend/` is a Vite/React/shadcn scaffold with no API integration — see `docs/PROJECT_OVERVIEW.md` for how to exercise the actual functionality via the GraphQL API directly in the meantime.
+- **The frontend only calls auth so far** — register, login, and a protected `myProfile` page (see `frontend/README.md` for the pattern: a plain-`fetch` GraphQL client, a Zustand store persisting the JWT to `localStorage`, `react-router` route guarding). Skills, jobs, matching, and the `onNotification` WebSocket subscription have no UI yet — see `docs/PROJECT_OVERVIEW.md` for how to exercise those directly via the GraphQL API in the meantime.
 - **Kafka/RabbitMQ don't exist in production** — `cmd/allinone` (what's actually deployed) is synchronous-only. Job matching, the notification log, and realtime WebSocket push are local/`kind`-only features today. See `docs/DEPLOYMENT.md`.
 
 ## Testing coverage — confirmed, not assumed
@@ -89,6 +89,6 @@ Checked directly (`go test -cover ./...`, `npm test -- --coverage`) rather than 
 - **Not unit-tested, by design**: every `cmd/<service>/main.go` (0% — these are thin wiring/assembly, verified via live end-to-end runs during each phase's build instead of `go test`), and all generated code (`gen/`, gqlgen's `generated/`/`model/` — never test generated code).
 - **Genuinely untested, not by design** — small Go utility packages with zero test files: `internal/platform/health`, `internal/platform/logger`, `internal/platform/requestid`. Thin enough that this is a minor gap, not a crisis, but it is a real gap.
 - **notification-service (NestJS)**: 19 passing tests, but coverage is uneven — `notifications.service.ts` and `email-notification.ts` are fully covered, `rabbitmq.consumer.ts` is well covered (78%), but `rabbitmq-connection.service.ts` is not (18%) — notably, this is the exact file where Phase 3.5 found and fixed a real lifecycle race condition (see `docs/DECISIONS.md`), and that fix was verified live rather than backed by a new unit test covering the race directly. Worth closing if this project continues.
-- **Frontend**: zero tests, no test tooling configured yet (no Vitest wired up) — consistent with there being no real logic to test yet.
+- **Frontend**: zero tests, no test tooling configured yet (no Vitest wired up). Unlike earlier phases, this is now a real gap, not a "nothing to test yet" — the auth pages have actual logic (form validation, the JWT-decode-locally workaround for `login`'s empty `userId`, protected-route redirects) that a future pass should cover.
 
 **Bottom line: no, not "everything" has unit tests** — the business logic that matters most is well covered, entrypoints and generated code are correctly excluded by convention, but a few specific gaps (the three small Go utility packages, and `rabbitmq-connection.service.ts`'s low coverage) are real and worth knowing about rather than assuming away.

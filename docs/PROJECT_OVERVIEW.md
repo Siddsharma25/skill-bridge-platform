@@ -23,16 +23,16 @@ It's built as a hands-on learning vehicle first and a product second: every arch
 
 ## How to actually use it right now
 
-There's no user-facing web app yet — `frontend/` is still an unwired Vite/React scaffold. Everything above is exercised through the backend's **GraphQL API** directly (via a GraphQL client, `curl`, or the Playground the gateway serves in dev). The relevant operations:
+**Register, login, and viewing your own profile now work from a real UI** — `frontend/` has register/login pages and a protected profile page wired to the live GraphQL API (see `frontend/README.md`). Everything else (skills, job postings, matching, realtime notifications) isn't in the UI yet and is still exercised through the backend's **GraphQL API** directly (via a GraphQL client, `curl`, or the Playground the gateway serves in dev). The relevant operations:
 
-- `register(email, password)` / `login(email, password)` / `googleAuthUrl` + `googleOAuthCallback(code)` — mutations
+- `register(email, password)` / `login(email, password)` / `googleAuthUrl` + `googleOAuthCallback(code)` — mutations (`register`/`login` have a frontend UI; Google OAuth doesn't yet)
 - `skills` (query, list) / `createSkill(name, category)` (mutation)
 - `jobs` (query, list) / `job(id)` (query) / `createJob(title, description, requiredSkillIds)` (mutation) — `Job.requiredSkills` and `Job.matches` resolve automatically
-- `myProfile` (query, requires auth) / `updateProfile(displayName, bio)` / `addUserSkill(skillId, proficiency)` — mutations, all require a valid bearer token from `login`
+- `myProfile` (query, requires auth, has a frontend UI) / `updateProfile(displayName, bio)` / `addUserSkill(skillId, proficiency)` — mutations, all require a valid bearer token from `login`
 - `onNotification` — a GraphQL subscription over WebSocket; open it with a valid token and it pushes a live message when you get matched to a job
 
 See `backend/cmd/api-gateway/README.md` for the exact schema and `docs/DECISIONS.md` for how each piece is wired underneath (which service owns what, which events drive what).
 
 ## Where this is headed (not yet built)
 
-A real frontend that actually calls this API, an authorization/role system, refresh-token rotation, and — per `docs/DEPLOYMENT.md` — a live deployment once the necessary third-party accounts (Supabase, Render, Vercel) exist.
+A frontend UI for skills/jobs/matching/realtime notifications (auth is done — see `frontend/README.md`), an authorization/role system, refresh-token rotation, and — per `docs/DEPLOYMENT.md` — a live deployment once the necessary third-party accounts (Supabase, Render, Vercel) exist.

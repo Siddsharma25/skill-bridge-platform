@@ -814,3 +814,26 @@ Everything below needs a live external account/credential this environment has n
 5. **Create a Google Cloud OAuth client** (Web application credentials, a stable redirect domain — not a Vercel preview URL, per the plan's Phase 0 note) if Google login is wanted; set `GOOGLE_OAUTH_REDIRECT_URL` to the deployed frontend's callback route.
 
 None of the above can be stubbed against a placeholder the way `DATABASE_URL`/`GOOGLE_OAUTH_*` were stubbed against local dev in earlier phases — a Supabase project, a Render service, and a Vercel project are all real accounts on real third-party platforms that only the repo owner can create.
+
+## Frontend auth wiring (post-Phase 7, not part of the original plan)
+
+The original plan never scoped connecting `frontend/` to the backend — every phase through 7 focused entirely on the backend, and the frontend stayed the unwired Vite scaffold Phase 1a's `git mv` left it as. This closes that gap for auth specifically (register, login, viewing your own profile), deliberately scoped smaller than the full feature set (skills/jobs/matching/realtime) to get one verified, working pattern in place before repeating it across more pages — see `frontend/README.md` for what exists.
+
+**GraphQL client: a ~20-line `fetch` wrapper, not Apollo/urql/`graphql-request`.** Three operations (`register`, `login`, `myProfile`) don't justify a client whose main value is caching/normalization across a large query surface; TanStack Query already covers the request-state (loading/error/retry) half of what a full GraphQL client would add. Revisit once skills/jobs are wired up and the query surface actually grows.
+
+**Auth storage: Zustand + `persist` to `localStorage`, not an httpOnly cookie.** The backend has no session/cookie mechanism at all — `AuthPayload` is `{ accessToken, userId }`, a bearer JWT, full stop. A cookie-based approach would require the gateway to *set* a cookie, which it doesn't do and isn't in scope here; `localStorage` is what the actual API surface supports today, matching the plan's original Phase 1a note that this exact tradeoff (httpOnly cookie vs. localStorage) was deferred, not decided.
+
+**A real bug this surfaced, not introduced by the frontend work**: `login`'s `AuthPayload.userId` always comes back `""` — confirmed live (see Verification below), and confirmed deliberate by `schema.resolvers.go`'s `Login` resolver comment: auth-service's `Login` RPC only ever returns a token, and the gateway's resolver documents that "the client can decode the JWT's `sub` claim locally if it needs the ID without a second round trip" rather than adding a second lookup. The frontend does exactly that (`src/lib/jwt.ts`'s `decodeJwtSubject`, applied uniformly to both `register` and `login` for one consistent code path) rather than treating the empty string as a bug to fix on the backend — changing `Login`'s wire shape now would be schema churn for behavior that's already documented as intentional.
+
+### Verification performed
+
+A throwaway local Postgres (`docker run postgres:16-alpine`) was bootstrapped and migrated (`000_bootstrap.sql` + `make migrate-up`), then `auth-service`, `users-service`, and `api-gateway` were run directly (`go run`, no Docker) with `REDIS_URL`/`KAFKA_BROKERS`/`RABBITMQ_URL` all deliberately unset, degrading gracefully as expected. Against that live gateway:
+
+- `register` → real `accessToken` + `userId` returned; `login` with the same credentials → real `accessToken`, empty `userId` as described above (confirming the bug is real and reproducible, not assumed from reading the resolver).
+- `myProfile` with the `register` token → succeeded, returning the correct `userId` (recovered from the JWT `sub` claim, not the empty field) with an empty profile shell (lazily created, matching earlier phases' documented behavior).
+- `myProfile` with no `Authorization` header → a GraphQL-level `"authentication required"` error, not a transport-level failure.
+- **CORS preflight and the actual request were both exercised with `Origin: http://localhost:5173`** (the frontend's real dev origin, not just localhost with no origin) — both correctly returned `Access-Control-Allow-Origin: http://localhost:5173`, confirming the browser-facing mechanism the frontend actually depends on, not just that the gateway responds at all.
+- `npm run build` (`tsc -b && vite build`) and `npm run lint` both clean.
+- The throwaway Postgres, the three `go run` processes, and the Vite dev server were all torn down after verification — nothing was left running.
+
+Not done: an actual browser click-through (this environment has no interactive browser available) — the above is the closest available substitute (the exact GraphQL operations the frontend's code sends, plus a CORS check that mimics what a real `fetch` from the SPA's origin would do).
