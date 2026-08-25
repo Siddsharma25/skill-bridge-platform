@@ -16,9 +16,17 @@
 #                          Bitnami image — this project avoids Bitnami
 #                          entirely (see the existing Kafka-on-k8s warning
 #                          below), not just for Helm charts specifically.
-#   - RabbitMQ:            NOT here yet — Phase 3 (notification-service) is
-#                          its first consumer, for the same reason Kafka
-#                          waited until Phase 2.
+#   - RabbitMQ:            here from Phase 3 onward (this file) —
+#                          auth-service publishes `notifications.email` on
+#                          successful Register; notification-service (the
+#                          NestJS service, backend/notification-service/)
+#                          consumes it, with a dead-letter exchange
+#                          (`notifications.dlx` -> `notifications.email.dlq`)
+#                          so a malformed/unprocessable message lands
+#                          somewhere inspectable instead of looping or
+#                          vanishing. See internal/platform/rabbitmq and
+#                          docs/DECISIONS.md's "Phase 3 implementation
+#                          notes" for the topology/ownership reasoning.
 #
 # Postgres is deliberately absent too: this project uses a single shared
 # Supabase instance (schema-per-service) rather than a local Postgres
@@ -95,6 +103,36 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # Single-node RabbitMQ, management-plugin image so the management UI
+  # (http://localhost:15672, guest/guest — the AMQP default, fine for
+  # local-only dev per this project's "no broker HA/hardening at this
+  # scale" stance, see docs/DECISIONS.md's Scope Cuts) comes for free —
+  # useful for eyeballing `notifications.email` / `notifications.email.dlq`
+  # depth while debugging the DLQ flow, rather than only being able to
+  # inspect state via rabbitmqadmin. Queue/exchange topology itself
+  # (notifications.email, notifications.dlx, notifications.email.dlq) is
+  # NOT declared here — it's declared idempotently in code by both
+  # auth-service's producer and notification-service's consumer at
+  # startup (see internal/platform/rabbitmq/topology.go), the same
+  # "created by the app, not pre-provisioned by infra" choice this file
+  # already makes for Kafka topics above.
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: sbp-rabbitmq
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # management UI
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
   redis-data:
   kafka-data:
+  rabbitmq-data:

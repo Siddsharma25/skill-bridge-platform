@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,6 +18,7 @@ import (
 	authv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/auth/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/jwks"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 )
 
 // bcryptCost is deliberately the library default (10), not the max (31).
@@ -46,14 +49,24 @@ type Server struct {
 	// directly — see oauth.go and oauth_test.go.
 	googleExchanger GoogleExchanger
 	oauthStore      oauthStore
+
+	// rabbitPublisher is nil-safe (see rabbitmq.Producer.Publish) and may
+	// be a *rabbitmq.Producer with no live connection, or a fake in tests —
+	// same pattern as users.Server.publisher for Kafka. Register publishes
+	// a best-effort "welcome" notification to it after the account is
+	// created; a publish failure here never fails Register (see Register's
+	// doc comment and docs/DECISIONS.md's no-transactional-outbox note).
+	rabbitPublisher rabbitmq.Publisher
 }
 
 // NewServer constructs a Server. db, keyPair, and log must not be nil;
 // issuer becomes the JWT `iss` claim. googleExchanger may be nil — see
 // NewGoogleExchangerFromEnv — in which case the Google OAuth RPCs degrade
 // to a clear FailedPrecondition status instead of the service failing to
-// start.
-func NewServer(db *gorm.DB, keyPair *jwks.KeyPair, issuer string, googleExchanger GoogleExchanger, log *zap.Logger) *Server {
+// start. rabbitPublisher may also be nil, in which case Register simply
+// skips publishing the welcome notification (checked explicitly at that
+// call site, same pattern as users-service's AddUserSkill/Kafka).
+func NewServer(db *gorm.DB, keyPair *jwks.KeyPair, issuer string, googleExchanger GoogleExchanger, rabbitPublisher rabbitmq.Publisher, log *zap.Logger) *Server {
 	var store oauthStore
 	if db != nil {
 		store = &gormOAuthStore{db: db}
@@ -65,6 +78,7 @@ func NewServer(db *gorm.DB, keyPair *jwks.KeyPair, issuer string, googleExchange
 		log:             log,
 		googleExchanger: googleExchanger,
 		oauthStore:      store,
+		rabbitPublisher: rabbitPublisher,
 	}
 }
 
@@ -108,6 +122,28 @@ func (s *Server) Register(ctx context.Context, req *authv1.RegisterRequest) (*au
 	if err != nil {
 		log.Error("failed to sign token", zap.Error(err))
 		return nil, status.Error(codes.Internal, "account created but failed to issue a session")
+	}
+
+	// Best-effort welcome notification (Phase 3): the account is already
+	// durably created in Postgres above, so nothing here — a nil
+	// publisher, a marshal error, or a broker publish failure — is allowed
+	// to fail Register. See rabbitmq.Producer.Publish's doc comment for
+	// why a publish failure specifically logs at Error, not Warn, despite
+	// still not propagating: this is real (if recoverable) data loss for
+	// the notification, not a pure performance optimization failing safe.
+	if s.rabbitPublisher != nil {
+		payload, marshalErr := json.Marshal(rabbitmq.EmailNotification{
+			MessageID: uuid.NewString(),
+			UserID:    cred.ID,
+			Email:     cred.Email,
+			EventType: rabbitmq.EventTypeWelcome,
+			CreatedAt: time.Now().UTC(),
+		})
+		if marshalErr != nil {
+			log.Error("failed to marshal welcome notification payload; skipping publish", zap.Error(marshalErr))
+		} else {
+			s.rabbitPublisher.Publish(ctx, rabbitmq.QueueNotificationsEmail, payload)
+		}
 	}
 
 	log.Info("registered new credential", zap.String("user_id", cred.ID))

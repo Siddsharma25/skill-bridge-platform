@@ -9,6 +9,7 @@ require (
 	github.com/graph-gophers/dataloader/v7 v7.2.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
+	github.com/rabbitmq/amqp091-go v1.14.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/twmb/franz-go v1.21.6
 	github.com/vektah/gqlparser/v2 v2.5.36

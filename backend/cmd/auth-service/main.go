@@ -23,6 +23,7 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/health"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/jwks"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
 )
@@ -90,7 +91,15 @@ func main() {
 		log.Info("Google OAuth configured")
 	}
 
-	authServer := auth.NewServer(gormDB, keyPair, issuer, googleExchanger, log)
+	// RabbitMQ producer (Phase 3): degrades gracefully, same pattern as the
+	// DB connection and Kafka producer above — a missing/unreachable
+	// RABBITMQ_URL just disables the best-effort welcome-notification
+	// publish for this instance rather than failing Register or the
+	// service startup. See internal/platform/rabbitmq and
+	// docs/DECISIONS.md's Phase 3 notes.
+	rabbitProducer := rabbitmq.NewProducerFromEnv(os.Getenv, log)
+
+	authServer := auth.NewServer(gormDB, keyPair, issuer, googleExchanger, rabbitProducer, log)
 
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),
@@ -149,6 +158,10 @@ func main() {
 					return err
 				}
 				return sqlDB.Close()
+			},
+			func(_ context.Context) error {
+				rabbitProducer.Close()
+				return nil
 			},
 		},
 	})
