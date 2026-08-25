@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Go module — backend/ (all five Go services share one go.mod)
+  - package-ecosystem: "gomod"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+
+  # NestJS notification-service — separate package.json from the frontend
+  - package-ecosystem: "npm"
+    directory: "/backend/notification-service"
+    schedule:
+      interval: "weekly"
+
+  # React frontend
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+
+  # GitHub Actions workflow actions themselves (actions/checkout, etc.)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
