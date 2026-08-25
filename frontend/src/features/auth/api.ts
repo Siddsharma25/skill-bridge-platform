@@ -67,3 +67,22 @@ export async function fetchMyProfile(token: string): Promise<Profile | null> {
   const data = await gqlRequest<{ myProfile: Profile | null }>(MY_PROFILE_QUERY, undefined, token);
   return data.myProfile;
 }
+
+const ADD_USER_SKILL_MUTATION = /* GraphQL */ `
+  mutation AddUserSkill($skillId: ID!, $proficiency: String!) {
+    addUserSkill(skillId: $skillId, proficiency: $proficiency)
+  }
+`;
+
+export async function addUserSkill(
+  token: string,
+  skillId: string,
+  proficiency: string,
+): Promise<boolean> {
+  const data = await gqlRequest<{ addUserSkill: boolean }>(
+    ADD_USER_SKILL_MUTATION,
+    { skillId, proficiency },
+    token,
+  );
+  return data.addUserSkill;
+}

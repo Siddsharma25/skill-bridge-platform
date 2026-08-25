@@ -28,7 +28,7 @@ npm install
 npm run dev
 ```
 
-Note: **the frontend only calls the backend for auth so far** (register/login/profile — see `frontend/README.md`). By default it points `VITE_API_URL` at `http://localhost:8080/query`, so pair this with a running `auth-service` + `users-service` + `api-gateway` (see the next section) to actually register/log in. Skills, jobs, matching, and realtime notifications aren't in the UI yet — use one of the backend options below and hit the GraphQL API directly for those.
+Note: the frontend now covers the full feature set (auth, skills, jobs, matching, realtime notifications — see `frontend/README.md`). By default it points `VITE_API_URL` at `http://localhost:8080/query`, so pair this with the backend running to see it do anything: `auth-service` + `users-service` + `api-gateway` alone gets you register/login/profile; add `skills-service` + `jobs-service` + Kafka/RabbitMQ/Redis (see the next section) for skill/job creation, matching, and the live notification bell to actually work end-to-end.
 
 ## One backend service
 

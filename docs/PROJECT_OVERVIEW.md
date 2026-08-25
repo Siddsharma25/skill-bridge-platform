@@ -23,16 +23,16 @@ It's built as a hands-on learning vehicle first and a product second: every arch
 
 ## How to actually use it right now
 
-**Register, login, and viewing your own profile now work from a real UI** — `frontend/` has register/login pages and a protected profile page wired to the live GraphQL API (see `frontend/README.md`). Everything else (skills, job postings, matching, realtime notifications) isn't in the UI yet and is still exercised through the backend's **GraphQL API** directly (via a GraphQL client, `curl`, or the Playground the gateway serves in dev). The relevant operations:
+**There's a real UI for the full feature set now** — `frontend/` has register/login/profile pages, skill browsing/creation, job posting/browsing/matching, and a live notification bell, all wired to the live GraphQL API (see `frontend/README.md`). Google OAuth is the one flow still API-only. Everything below is also directly reachable via the GraphQL API (a GraphQL client, `curl`, or the Playground the gateway serves in dev), useful if you want to script something or don't want to run the frontend:
 
 - `register(email, password)` / `login(email, password)` / `googleAuthUrl` + `googleOAuthCallback(code)` — mutations (`register`/`login` have a frontend UI; Google OAuth doesn't yet)
-- `skills` (query, list) / `createSkill(name, category)` (mutation)
-- `jobs` (query, list) / `job(id)` (query) / `createJob(title, description, requiredSkillIds)` (mutation) — `Job.requiredSkills` and `Job.matches` resolve automatically
-- `myProfile` (query, requires auth, has a frontend UI) / `updateProfile(displayName, bio)` / `addUserSkill(skillId, proficiency)` — mutations, all require a valid bearer token from `login`
-- `onNotification` — a GraphQL subscription over WebSocket; open it with a valid token and it pushes a live message when you get matched to a job
+- `skills` (query, list) / `createSkill(name, category)` (mutation) — both have a frontend UI (`/skills`)
+- `jobs` (query, list) / `job(id)` (query) / `createJob(title, description, requiredSkillIds)` (mutation) — `Job.requiredSkills` and `Job.matches` resolve automatically; all have a frontend UI (`/jobs`, `/jobs/:id`, `/jobs/new`)
+- `myProfile` (query, requires auth) / `updateProfile(displayName, bio)` / `addUserSkill(skillId, proficiency)` — mutations, all require a valid bearer token from `login`; `myProfile` and `addUserSkill` have a frontend UI (`updateProfile` doesn't yet)
+- `onNotification` — a GraphQL subscription over WebSocket, requires a valid token; pushes a live message when you get matched to a job. Has a frontend UI (the header's notification bell)
 
 See `backend/cmd/api-gateway/README.md` for the exact schema and `docs/DECISIONS.md` for how each piece is wired underneath (which service owns what, which events drive what).
 
 ## Where this is headed (not yet built)
 
-A frontend UI for skills/jobs/matching/realtime notifications (auth is done — see `frontend/README.md`), an authorization/role system, refresh-token rotation, and — per `docs/DEPLOYMENT.md` — a live deployment once the necessary third-party accounts (Supabase, Render, Vercel) exist.
+A Google OAuth UI and an `updateProfile` form (both API-only today — see `frontend/README.md`'s Known gaps), an authorization/role system, refresh-token rotation, and — per `docs/DEPLOYMENT.md` — a live deployment once the necessary third-party accounts (Supabase, Render, Vercel) exist.
