@@ -22,10 +22,11 @@ type Skill {
 
 # Job mirrors jobs-service's Job message, except requiredSkillIds (opaque
 # skills-service IDs on the wire) is resolved to full Skill objects here.
-# That resolution is a deliberate small N+1 (one skills-service call per
-# Job in a list) — see the requiredSkills field resolver in
-# schema.resolvers.go and docs/DECISIONS.md; left for Phase 1c's
-# dataloader work rather than solved now.
+# Phase 1b resolved this with a deliberate small N+1 (one ListSkills call
+# per Job in a list); Phase 1c replaced it with a per-request dataloader
+# that batches every skill_id needed across a whole response into one
+# GetSkillsByIds call — see the requiredSkills field resolver in
+# schema.resolvers.go and docs/DECISIONS.md.
 type Job {
   id: ID!
   title: String!
@@ -34,8 +35,8 @@ type Job {
 }
 
 # UserSkill pairs one of a user's claimed skills (resolved from
-# skills-service by ID, same N+1 caveat as Job.requiredSkills) with the
-# proficiency users-service stored for it.
+# skills-service by ID via the same dataloader as Job.requiredSkills) with
+# the proficiency users-service stored for it.
 type UserSkill {
   skill: Skill!
   proficiency: String!
@@ -65,6 +66,19 @@ type Mutation {
   unknown email or a wrong password.
   """
   login(email: String!, password: String!): AuthPayload!
+
+  """
+  Exchanges a Google OAuth authorization code (from Google's redirect back
+  to the client after consent) for one of this platform's own access
+  tokens. Applies the account-linking rule documented on auth-service's
+  linkOrCreateGoogleUser and in docs/DECISIONS.md: an existing identity for
+  this Google account wins outright; failing that, an existing
+  password-registered credential for the same email is linked to rather
+  than duplicated; failing both, a new account is created. Returns a
+  GraphQL error (translated from FailedPrecondition) if Google OAuth isn't
+  configured on this instance — see auth.proto's GoogleOAuthCallback.
+  """
+  googleOAuthCallback(code: String!): AuthPayload!
 
   """
   Adds a new skill to the shared taxonomy. Unauthenticated in Phase 1b —
@@ -100,6 +114,17 @@ type Query {
   specifically (parsing, resolver dispatch) rather than just the process.
   """
   ping: String!
+
+  """
+  Returns the URL a client should redirect the user's browser to in order
+  to start the Google OAuth consent flow. `state` is an opaque
+  CSRF-protection value the caller generates and must verify comes back
+  unchanged from Google's redirect — auth-service is stateless and does
+  not generate or remember it (see auth.proto's GetGoogleAuthURLRequest
+  and docs/DECISIONS.md). Returns a GraphQL error (translated from
+  FailedPrecondition) if Google OAuth isn't configured on this instance.
+  """
+  googleAuthUrl(state: String!): String!
 
   "Returns every skill in the shared taxonomy. Unauthenticated."
   skills: [Skill!]!

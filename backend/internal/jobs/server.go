@@ -2,8 +2,10 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -12,48 +14,104 @@ import (
 	"gorm.io/gorm"
 
 	jobsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/jobs/v1"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/cache"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 )
 
+// jobsAllCacheKey caches ListJobs' full result; jobCacheKey caches one
+// GetJob result per job ID. jobsCacheTTL is deliberately short (unlike
+// skills-service's 1h) — job postings are more dynamic and, unlike
+// skills-service, there's no per-job invalidation on write here (only
+// CreateJob exists; there's no UpdateJob yet), so a short TTL bounds
+// staleness instead of an explicit DEL covering every case. See
+// docs/DECISIONS.md.
+const (
+	jobsAllCacheKey = "jobs:all"
+	jobsCacheTTL    = 30 * time.Second
+)
+
+func jobCacheKey(id string) string { return "jobs:" + id }
+
 // Server implements jobsv1.JobsServiceServer. db may be nil — same
 // degraded-start pattern as every other service in this codebase (see
-// backend/CLAUDE.md).
+// backend/CLAUDE.md). cache may also be nil/disabled (see
+// internal/platform/cache) — caching is purely an optimization.
 type Server struct {
 	jobsv1.UnimplementedJobsServiceServer
 
-	db  *gorm.DB
-	log *zap.Logger
+	db    *gorm.DB
+	cache cache.Cache
+	log   *zap.Logger
+
+	// fetchAllJobs, fetchJobByID, and insertJob default to thin wrappers
+	// over s.db but are swappable fields, same seam-for-testability
+	// reasoning as internal/skills/server.go — see that file's comment and
+	// server_test.go for why.
+	fetchAllJobs func(ctx context.Context) ([]jobWithSkills, error)
+	fetchJobByID func(ctx context.Context, id string) (*jobWithSkills, error)
+	insertJob    func(ctx context.Context, job *Job, skillIDs []string) error
 }
 
-// NewServer constructs a Server. log must not be nil; db may be nil.
-func NewServer(db *gorm.DB, log *zap.Logger) *Server {
-	return &Server{db: db, log: log}
+// jobWithSkills bundles a Job with its resolved required-skill IDs — the
+// shape both the cache and the proto conversion need together.
+type jobWithSkills struct {
+	Job    Job
+	Skills []string
 }
 
-// CreateJob is unauthenticated in Phase 1b — same reasoning as
-// SkillsService.CreateSkill (see docs/DECISIONS.md). The job row and its
-// required-skill rows are inserted in one transaction so a partial write
-// (job created, skills half-inserted) can't happen.
-func (s *Server) CreateJob(ctx context.Context, req *jobsv1.CreateJobRequest) (*jobsv1.CreateJobResponse, error) {
-	log := logger.FromContext(ctx, s.log)
+// NewServer constructs a Server. log must not be nil; db and c may both be
+// nil.
+func NewServer(db *gorm.DB, c cache.Cache, log *zap.Logger) *Server {
+	s := &Server{db: db, cache: c, log: log}
+	s.fetchAllJobs = s.queryAllJobsFromDB
+	s.fetchJobByID = s.queryJobByIDFromDB
+	s.insertJob = s.insertJobIntoDB
+	return s
+}
 
-	title := strings.TrimSpace(req.GetTitle())
-	if title == "" {
-		return nil, status.Error(codes.InvalidArgument, "title is required")
-	}
+func (s *Server) queryAllJobsFromDB(ctx context.Context) ([]jobWithSkills, error) {
 	if s.db == nil {
 		return nil, status.Error(codes.Unavailable, "database is not configured on this instance")
 	}
-
-	job := Job{
-		ID:          uuid.NewString(),
-		Title:       title,
-		Description: strings.TrimSpace(req.GetDescription()),
+	var rows []Job
+	if err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error; err != nil {
+		return nil, err
 	}
-	skillIDs := dedupeNonEmpty(req.GetRequiredSkillIds())
+	skillsByJob, err := s.requiredSkillsByJobID(ctx, jobIDs(rows))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]jobWithSkills, len(rows))
+	for i := range rows {
+		out[i] = jobWithSkills{Job: rows[i], Skills: skillsByJob[rows[i].ID]}
+	}
+	return out, nil
+}
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&job).Error; err != nil {
+func (s *Server) queryJobByIDFromDB(ctx context.Context, id string) (*jobWithSkills, error) {
+	if s.db == nil {
+		return nil, status.Error(codes.Unavailable, "database is not configured on this instance")
+	}
+	var job Job
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&job).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, status.Error(codes.NotFound, "job not found")
+		}
+		return nil, err
+	}
+	skillsByJob, err := s.requiredSkillsByJobID(ctx, []string{job.ID})
+	if err != nil {
+		return nil, err
+	}
+	return &jobWithSkills{Job: job, Skills: skillsByJob[job.ID]}, nil
+}
+
+func (s *Server) insertJobIntoDB(ctx context.Context, job *Job, skillIDs []string) error {
+	if s.db == nil {
+		return status.Error(codes.Unavailable, "database is not configured on this instance")
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(job).Error; err != nil {
 			return err
 		}
 		if len(skillIDs) == 0 {
@@ -65,9 +123,41 @@ func (s *Server) CreateJob(ctx context.Context, req *jobsv1.CreateJobRequest) (*
 		}
 		return tx.Create(&required).Error
 	})
-	if err != nil {
+}
+
+// CreateJob is unauthenticated in Phase 1b — same reasoning as
+// SkillsService.CreateSkill (see docs/DECISIONS.md). The job row and its
+// required-skill rows are inserted in one transaction so a partial write
+// (job created, skills half-inserted) can't happen. Successfully creating
+// a job DELs jobs:all (write-through, per docs/DECISIONS.md) so ListJobs
+// never serves a stale list missing the new posting; there's no
+// jobs:<id> to invalidate for a brand-new ID, so GetJob relies on
+// jobsCacheTTL alone.
+func (s *Server) CreateJob(ctx context.Context, req *jobsv1.CreateJobRequest) (*jobsv1.CreateJobResponse, error) {
+	log := logger.FromContext(ctx, s.log)
+
+	title := strings.TrimSpace(req.GetTitle())
+	if title == "" {
+		return nil, status.Error(codes.InvalidArgument, "title is required")
+	}
+
+	job := Job{
+		ID:          uuid.NewString(),
+		Title:       title,
+		Description: strings.TrimSpace(req.GetDescription()),
+	}
+	skillIDs := dedupeNonEmpty(req.GetRequiredSkillIds())
+
+	if err := s.insertJob(ctx, &job, skillIDs); err != nil {
+		if _, isStatus := status.FromError(err); isStatus {
+			return nil, err
+		}
 		log.Error("failed to create job", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to create job")
+	}
+
+	if s.cache != nil {
+		s.cache.Del(ctx, jobsAllCacheKey)
 	}
 
 	log.Info("created job", zap.String("job_id", job.ID), zap.String("title", job.Title))
@@ -75,39 +165,55 @@ func (s *Server) CreateJob(ctx context.Context, req *jobsv1.CreateJobRequest) (*
 }
 
 // ListJobs returns every job posting, most-recently-created first, with
-// required_skill_ids attached. Required skills are fetched in one
-// additional query (grouped in memory by job_id) rather than per-job, so
-// listing N jobs costs 2 queries total, not N+1 — a job's own
-// required-skill IDs are jobs-service's own data, unlike the
+// required_skill_ids attached. Served from the jobs:all cache entry when
+// present (short TTL — see jobsCacheTTL); on a miss, falls through to the
+// database (which itself fetches every job's required skills in one
+// additional query, grouped in memory by job_id, rather than per-job — a
+// job's own required-skill IDs are jobs-service's own data, unlike the
 // cross-service skill-name resolution the gateway leaves as a deliberate
-// N+1 (see jobs.proto).
+// N+1, see jobs.proto) and populates the cache for next time.
 func (s *Server) ListJobs(ctx context.Context, _ *jobsv1.ListJobsRequest) (*jobsv1.ListJobsResponse, error) {
 	log := logger.FromContext(ctx, s.log)
 
-	if s.db == nil {
-		return nil, status.Error(codes.Unavailable, "database is not configured on this instance")
+	if s.cache != nil {
+		if cached, ok := s.cache.Get(ctx, jobsAllCacheKey); ok {
+			jobs, err := decodeCachedJobs(cached)
+			if err == nil {
+				return &jobsv1.ListJobsResponse{Jobs: jobs}, nil
+			}
+			log.Warn("failed to decode cached jobs; falling through to database", zap.Error(err))
+		}
 	}
 
-	var rows []Job
-	if err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error; err != nil {
-		log.Error("failed to list jobs", zap.Error(err))
-		return nil, status.Error(codes.Internal, "failed to list jobs")
-	}
-
-	skillsByJob, err := s.requiredSkillsByJobID(ctx, jobIDs(rows))
+	rows, err := s.fetchAllJobs(ctx)
 	if err != nil {
-		log.Error("failed to list required skills", zap.Error(err))
+		if _, isStatus := status.FromError(err); isStatus {
+			return nil, err
+		}
+		log.Error("failed to list jobs", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to list jobs")
 	}
 
 	out := make([]*jobsv1.Job, 0, len(rows))
 	for i := range rows {
-		out = append(out, toProto(&rows[i], skillsByJob[rows[i].ID]))
+		out = append(out, toProto(&rows[i].Job, rows[i].Skills))
 	}
+
+	if s.cache != nil {
+		if encoded, err := encodeCachedJobs(rows); err == nil {
+			s.cache.Set(ctx, jobsAllCacheKey, encoded, jobsCacheTTL)
+		} else {
+			log.Warn("failed to encode jobs for caching", zap.Error(err))
+		}
+	}
+
 	return &jobsv1.ListJobsResponse{Jobs: out}, nil
 }
 
-// GetJob returns a single job posting by ID, or NotFound.
+// GetJob returns a single job posting by ID, or NotFound. Served from its
+// jobs:<id> cache entry when present (short TTL, same reasoning as
+// ListJobs); on a miss, falls through to the database and populates the
+// cache for next time.
 func (s *Server) GetJob(ctx context.Context, req *jobsv1.GetJobRequest) (*jobsv1.GetJobResponse, error) {
 	log := logger.FromContext(ctx, s.log)
 
@@ -115,26 +221,37 @@ func (s *Server) GetJob(ctx context.Context, req *jobsv1.GetJobRequest) (*jobsv1
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	if s.db == nil {
-		return nil, status.Error(codes.Unavailable, "database is not configured on this instance")
+
+	key := jobCacheKey(id)
+	if s.cache != nil {
+		if cached, ok := s.cache.Get(ctx, key); ok {
+			job, err := decodeCachedJob(cached)
+			if err == nil {
+				return &jobsv1.GetJobResponse{Job: job}, nil
+			}
+			log.Warn("failed to decode cached job; falling through to database", zap.Error(err), zap.String("job_id", id))
+		}
 	}
 
-	var job Job
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&job).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, status.Error(codes.NotFound, "job not found")
+	jws, err := s.fetchJobByID(ctx, id)
+	if err != nil {
+		if st, isStatus := status.FromError(err); isStatus {
+			return nil, st.Err()
 		}
 		log.Error("failed to get job", zap.Error(err), zap.String("job_id", id))
 		return nil, status.Error(codes.Internal, "failed to get job")
 	}
 
-	skillsByJob, err := s.requiredSkillsByJobID(ctx, []string{job.ID})
-	if err != nil {
-		log.Error("failed to get required skills", zap.Error(err), zap.String("job_id", id))
-		return nil, status.Error(codes.Internal, "failed to get job")
+	jobProto := toProto(&jws.Job, jws.Skills)
+	if s.cache != nil {
+		if encoded, err := encodeCachedJob(jobProto); err == nil {
+			s.cache.Set(ctx, key, encoded, jobsCacheTTL)
+		} else {
+			log.Warn("failed to encode job for caching", zap.Error(err), zap.String("job_id", id))
+		}
 	}
 
-	return &jobsv1.GetJobResponse{Job: toProto(&job, skillsByJob[job.ID])}, nil
+	return &jobsv1.GetJobResponse{Job: jobProto}, nil
 }
 
 // requiredSkillsByJobID fetches every RequiredSkill row for the given job
@@ -189,4 +306,61 @@ func toProto(j *Job, requiredSkillIDs []string) *jobsv1.Job {
 		Description:      j.Description,
 		RequiredSkillIds: requiredSkillIDs,
 	}
+}
+
+// cachedJob is the JSON shape stored under jobs:<id> and (as a slice)
+// jobs:all — a small DTO rather than the generated protobuf struct
+// directly, same reasoning as skills-service's cachedSkill.
+type cachedJob struct {
+	ID               string   `json:"id"`
+	Title            string   `json:"title"`
+	Description      string   `json:"description"`
+	RequiredSkillIDs []string `json:"required_skill_ids"`
+}
+
+func toCachedJob(j *jobsv1.Job) cachedJob {
+	return cachedJob{ID: j.GetId(), Title: j.GetTitle(), Description: j.GetDescription(), RequiredSkillIDs: j.GetRequiredSkillIds()}
+}
+
+func (c cachedJob) toProto() *jobsv1.Job {
+	return &jobsv1.Job{Id: c.ID, Title: c.Title, Description: c.Description, RequiredSkillIds: c.RequiredSkillIDs}
+}
+
+func encodeCachedJob(j *jobsv1.Job) (string, error) {
+	b, err := json.Marshal(toCachedJob(j))
+	return string(b), err
+}
+
+func decodeCachedJob(raw string) (*jobsv1.Job, error) {
+	var c cachedJob
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return nil, err
+	}
+	return c.toProto(), nil
+}
+
+func encodeCachedJobs(rows []jobWithSkills) (string, error) {
+	dtos := make([]cachedJob, len(rows))
+	for i := range rows {
+		dtos[i] = cachedJob{
+			ID:               rows[i].Job.ID,
+			Title:            rows[i].Job.Title,
+			Description:      rows[i].Job.Description,
+			RequiredSkillIDs: rows[i].Skills,
+		}
+	}
+	b, err := json.Marshal(dtos)
+	return string(b), err
+}
+
+func decodeCachedJobs(raw string) ([]*jobsv1.Job, error) {
+	var dtos []cachedJob
+	if err := json.Unmarshal([]byte(raw), &dtos); err != nil {
+		return nil, err
+	}
+	out := make([]*jobsv1.Job, 0, len(dtos))
+	for _, d := range dtos {
+		out = append(out, d.toProto())
+	}
+	return out, nil
 }

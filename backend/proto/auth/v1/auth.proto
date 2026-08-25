@@ -20,9 +20,10 @@ option go_package = "github.com/Siddsharma25/skill-bridge-platform/backend/gen/a
 // touches: the api-gateway forwards raw credentials over gRPC (private
 // network only) and never sees or stores a hash itself.
 //
-// Google OAuth (Phase 1c) and refresh-token rotation are intentionally out
-// of scope for this first version — see docs/DECISIONS.md for the phase
-// boundary.
+// Google OAuth (Phase 1c, see GetGoogleAuthURL/GoogleOAuthCallback below)
+// and refresh-token rotation are the two things Phase 1a's comment here
+// deferred; refresh-token rotation is still out of scope — see
+// docs/DECISIONS.md for the phase boundary.
 service AuthService {
   // Register creates a new credential record (email + bcrypt password
   // hash) and immediately issues an access token, so a client can move
@@ -35,6 +36,25 @@ service AuthService {
   // does not distinguish "no such user" from "wrong password" in the error
   // message — that distinction is a user-enumeration side channel.
   rpc Login(LoginRequest) returns (LoginResponse);
+
+  // GetGoogleAuthURL returns the URL a client should redirect the user's
+  // browser to in order to start the Google consent flow. Returns
+  // FailedPrecondition if GOOGLE_OAUTH_CLIENT_ID/SECRET/REDIRECT_URL aren't
+  // configured on this instance (see docs/DECISIONS.md — no real Google
+  // Cloud OAuth client exists yet, so this degrades the same way a missing
+  // DATABASE_URL does elsewhere in this codebase, rather than the process
+  // failing to start).
+  rpc GetGoogleAuthURL(GetGoogleAuthURLRequest) returns (GetGoogleAuthURLResponse);
+
+  // GoogleOAuthCallback exchanges an authorization code (from Google's
+  // redirect back to the client after consent) for one of this platform's
+  // own access tokens. See docs/DECISIONS.md for the account-linking rule:
+  // an existing auth.oauth_identities row for the same Google subject wins
+  // outright; failing that, an existing auth.credentials row for the same
+  // email is linked to rather than duplicated; failing that, a new
+  // credential + identity pair is created. Returns FailedPrecondition under
+  // the same missing-config condition as GetGoogleAuthURL.
+  rpc GoogleOAuthCallback(GoogleOAuthCallbackRequest) returns (GoogleOAuthCallbackResponse);
 }
 
 // RegisterRequest carries a new user's chosen credentials in plaintext over
@@ -63,4 +83,33 @@ message LoginRequest {
 
 message LoginResponse {
   string access_token = 1;
+}
+
+message GetGoogleAuthURLRequest {
+  // state is an opaque CSRF-protection value the caller generates and must
+  // verify comes back unchanged from Google's redirect. auth-service does
+  // not generate or remember it — the service is stateless (no server
+  // sessions, per docs/DECISIONS.md), so the caller (frontend) owns
+  // round-tripping it, typically by stashing it in a short-lived cookie or
+  // localStorage entry before redirecting.
+  string state = 1;
+}
+
+message GetGoogleAuthURLResponse {
+  string auth_url = 1;
+}
+
+message GoogleOAuthCallbackRequest {
+  // code is the one-time authorization code Google appended to its
+  // redirect back to the client after the user granted consent.
+  string code = 1;
+}
+
+message GoogleOAuthCallbackResponse {
+  string access_token = 1;
+  // user_id is included here (unlike LoginResponse) because this may be
+  // the very first time this identity has ever authenticated — a client
+  // driving a "welcome" flow needs the ID without a second round trip, and
+  // there's no cheaper way to get it than handing it back directly.
+  string user_id = 2;
 }

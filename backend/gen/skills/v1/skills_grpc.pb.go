@@ -26,8 +26,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SkillsService_CreateSkill_FullMethodName = "/skills.v1.SkillsService/CreateSkill"
-	SkillsService_ListSkills_FullMethodName  = "/skills.v1.SkillsService/ListSkills"
+	SkillsService_CreateSkill_FullMethodName    = "/skills.v1.SkillsService/CreateSkill"
+	SkillsService_ListSkills_FullMethodName     = "/skills.v1.SkillsService/ListSkills"
+	SkillsService_GetSkillsByIds_FullMethodName = "/skills.v1.SkillsService/GetSkillsByIds"
 )
 
 // SkillsServiceClient is the client API for SkillsService service.
@@ -49,6 +50,13 @@ type SkillsServiceClient interface {
 	// fine at this data scale; revisit if the taxonomy ever grows large
 	// enough to matter.
 	ListSkills(ctx context.Context, in *ListSkillsRequest, opts ...grpc.CallOption) (*ListSkillsResponse, error)
+	// GetSkillsByIds returns every skill matching one of ids (any id with no
+	// match is silently omitted, not an error). Added in Phase 1c so the
+	// gateway's dataloader can batch every distinct skill_id referenced
+	// across a whole GraphQL response into one call, instead of the Phase 1b
+	// pattern of fetching the entire taxonomy via ListSkills once per parent
+	// object (Job, UserSkill) and filtering locally — see docs/DECISIONS.md.
+	GetSkillsByIds(ctx context.Context, in *GetSkillsByIdsRequest, opts ...grpc.CallOption) (*GetSkillsByIdsResponse, error)
 }
 
 type skillsServiceClient struct {
@@ -79,6 +87,16 @@ func (c *skillsServiceClient) ListSkills(ctx context.Context, in *ListSkillsRequ
 	return out, nil
 }
 
+func (c *skillsServiceClient) GetSkillsByIds(ctx context.Context, in *GetSkillsByIdsRequest, opts ...grpc.CallOption) (*GetSkillsByIdsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSkillsByIdsResponse)
+	err := c.cc.Invoke(ctx, SkillsService_GetSkillsByIds_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SkillsServiceServer is the server API for SkillsService service.
 // All implementations must embed UnimplementedSkillsServiceServer
 // for forward compatibility.
@@ -98,6 +116,13 @@ type SkillsServiceServer interface {
 	// fine at this data scale; revisit if the taxonomy ever grows large
 	// enough to matter.
 	ListSkills(context.Context, *ListSkillsRequest) (*ListSkillsResponse, error)
+	// GetSkillsByIds returns every skill matching one of ids (any id with no
+	// match is silently omitted, not an error). Added in Phase 1c so the
+	// gateway's dataloader can batch every distinct skill_id referenced
+	// across a whole GraphQL response into one call, instead of the Phase 1b
+	// pattern of fetching the entire taxonomy via ListSkills once per parent
+	// object (Job, UserSkill) and filtering locally — see docs/DECISIONS.md.
+	GetSkillsByIds(context.Context, *GetSkillsByIdsRequest) (*GetSkillsByIdsResponse, error)
 	mustEmbedUnimplementedSkillsServiceServer()
 }
 
@@ -113,6 +138,9 @@ func (UnimplementedSkillsServiceServer) CreateSkill(context.Context, *CreateSkil
 }
 func (UnimplementedSkillsServiceServer) ListSkills(context.Context, *ListSkillsRequest) (*ListSkillsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSkills not implemented")
+}
+func (UnimplementedSkillsServiceServer) GetSkillsByIds(context.Context, *GetSkillsByIdsRequest) (*GetSkillsByIdsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSkillsByIds not implemented")
 }
 func (UnimplementedSkillsServiceServer) mustEmbedUnimplementedSkillsServiceServer() {}
 func (UnimplementedSkillsServiceServer) testEmbeddedByValue()                       {}
@@ -171,6 +199,24 @@ func _SkillsService_ListSkills_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SkillsService_GetSkillsByIds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSkillsByIdsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillsServiceServer).GetSkillsByIds(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillsService_GetSkillsByIds_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillsServiceServer).GetSkillsByIds(ctx, req.(*GetSkillsByIdsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SkillsService_ServiceDesc is the grpc.ServiceDesc for SkillsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -185,6 +231,10 @@ var SkillsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSkills",
 			Handler:    _SkillsService_ListSkills_Handler,
+		},
+		{
+			MethodName: "GetSkillsByIds",
+			Handler:    _SkillsService_GetSkillsByIds_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

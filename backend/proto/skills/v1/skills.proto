@@ -26,6 +26,14 @@ service SkillsService {
   // fine at this data scale; revisit if the taxonomy ever grows large
   // enough to matter.
   rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
+
+  // GetSkillsByIds returns every skill matching one of ids (any id with no
+  // match is silently omitted, not an error). Added in Phase 1c so the
+  // gateway's dataloader can batch every distinct skill_id referenced
+  // across a whole GraphQL response into one call, instead of the Phase 1b
+  // pattern of fetching the entire taxonomy via ListSkills once per parent
+  // object (Job, UserSkill) and filtering locally — see docs/DECISIONS.md.
+  rpc GetSkillsByIds(GetSkillsByIdsRequest) returns (GetSkillsByIdsResponse);
 }
 
 // Skill is the canonical shape referenced by ID from users-service
@@ -48,5 +56,13 @@ message CreateSkillResponse {
 message ListSkillsRequest {}
 
 message ListSkillsResponse {
+  repeated Skill skills = 1;
+}
+
+message GetSkillsByIdsRequest {
+  repeated string ids = 1;
+}
+
+message GetSkillsByIdsResponse {
   repeated Skill skills = 1;
 }

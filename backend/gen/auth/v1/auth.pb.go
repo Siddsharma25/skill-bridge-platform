@@ -242,6 +242,202 @@ func (x *LoginResponse) GetAccessToken() string {
 	return ""
 }
 
+type GetGoogleAuthURLRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// state is an opaque CSRF-protection value the caller generates and must
+	// verify comes back unchanged from Google's redirect. auth-service does
+	// not generate or remember it — the service is stateless (no server
+	// sessions, per docs/DECISIONS.md), so the caller (frontend) owns
+	// round-tripping it, typically by stashing it in a short-lived cookie or
+	// localStorage entry before redirecting.
+	State         string `protobuf:"bytes,1,opt,name=state,proto3" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetGoogleAuthURLRequest) Reset() {
+	*x = GetGoogleAuthURLRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetGoogleAuthURLRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetGoogleAuthURLRequest) ProtoMessage() {}
+
+func (x *GetGoogleAuthURLRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetGoogleAuthURLRequest.ProtoReflect.Descriptor instead.
+func (*GetGoogleAuthURLRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *GetGoogleAuthURLRequest) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+type GetGoogleAuthURLResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AuthUrl       string                 `protobuf:"bytes,1,opt,name=auth_url,json=authUrl,proto3" json:"auth_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetGoogleAuthURLResponse) Reset() {
+	*x = GetGoogleAuthURLResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetGoogleAuthURLResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetGoogleAuthURLResponse) ProtoMessage() {}
+
+func (x *GetGoogleAuthURLResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetGoogleAuthURLResponse.ProtoReflect.Descriptor instead.
+func (*GetGoogleAuthURLResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetGoogleAuthURLResponse) GetAuthUrl() string {
+	if x != nil {
+		return x.AuthUrl
+	}
+	return ""
+}
+
+type GoogleOAuthCallbackRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// code is the one-time authorization code Google appended to its
+	// redirect back to the client after the user granted consent.
+	Code          string `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GoogleOAuthCallbackRequest) Reset() {
+	*x = GoogleOAuthCallbackRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GoogleOAuthCallbackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GoogleOAuthCallbackRequest) ProtoMessage() {}
+
+func (x *GoogleOAuthCallbackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GoogleOAuthCallbackRequest.ProtoReflect.Descriptor instead.
+func (*GoogleOAuthCallbackRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *GoogleOAuthCallbackRequest) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+type GoogleOAuthCallbackResponse struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AccessToken string                 `protobuf:"bytes,1,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	// user_id is included here (unlike LoginResponse) because this may be
+	// the very first time this identity has ever authenticated — a client
+	// driving a "welcome" flow needs the ID without a second round trip, and
+	// there's no cheaper way to get it than handing it back directly.
+	UserId        string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GoogleOAuthCallbackResponse) Reset() {
+	*x = GoogleOAuthCallbackResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GoogleOAuthCallbackResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GoogleOAuthCallbackResponse) ProtoMessage() {}
+
+func (x *GoogleOAuthCallbackResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GoogleOAuthCallbackResponse.ProtoReflect.Descriptor instead.
+func (*GoogleOAuthCallbackResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GoogleOAuthCallbackResponse) GetAccessToken() string {
+	if x != nil {
+		return x.AccessToken
+	}
+	return ""
+}
+
+func (x *GoogleOAuthCallbackResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
 var File_auth_v1_auth_proto protoreflect.FileDescriptor
 
 const file_auth_v1_auth_proto_rawDesc = "" +
@@ -257,10 +453,21 @@ const file_auth_v1_auth_proto_rawDesc = "" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12\x1a\n" +
 	"\bpassword\x18\x02 \x01(\tR\bpassword\"2\n" +
 	"\rLoginResponse\x12!\n" +
-	"\faccess_token\x18\x01 \x01(\tR\vaccessToken2\x86\x01\n" +
+	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"/\n" +
+	"\x17GetGoogleAuthURLRequest\x12\x14\n" +
+	"\x05state\x18\x01 \x01(\tR\x05state\"5\n" +
+	"\x18GetGoogleAuthURLResponse\x12\x19\n" +
+	"\bauth_url\x18\x01 \x01(\tR\aauthUrl\"0\n" +
+	"\x1aGoogleOAuthCallbackRequest\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\"Y\n" +
+	"\x1bGoogleOAuthCallbackResponse\x12!\n" +
+	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId2\xc1\x02\n" +
 	"\vAuthService\x12?\n" +
 	"\bRegister\x12\x18.auth.v1.RegisterRequest\x1a\x19.auth.v1.RegisterResponse\x126\n" +
-	"\x05Login\x12\x15.auth.v1.LoginRequest\x1a\x16.auth.v1.LoginResponseB\x9f\x01\n" +
+	"\x05Login\x12\x15.auth.v1.LoginRequest\x1a\x16.auth.v1.LoginResponse\x12W\n" +
+	"\x10GetGoogleAuthURL\x12 .auth.v1.GetGoogleAuthURLRequest\x1a!.auth.v1.GetGoogleAuthURLResponse\x12`\n" +
+	"\x13GoogleOAuthCallback\x12#.auth.v1.GoogleOAuthCallbackRequest\x1a$.auth.v1.GoogleOAuthCallbackResponseB\x9f\x01\n" +
 	"\vcom.auth.v1B\tAuthProtoP\x01ZHgithub.com/Siddsharma25/skill-bridge-platform/backend/gen/auth/v1;authv1\xa2\x02\x03AXX\xaa\x02\aAuth.V1\xca\x02\aAuth\\V1\xe2\x02\x13Auth\\V1\\GPBMetadata\xea\x02\bAuth::V1b\x06proto3"
 
 var (
@@ -275,20 +482,28 @@ func file_auth_v1_auth_proto_rawDescGZIP() []byte {
 	return file_auth_v1_auth_proto_rawDescData
 }
 
-var file_auth_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_auth_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_auth_v1_auth_proto_goTypes = []any{
-	(*RegisterRequest)(nil),  // 0: auth.v1.RegisterRequest
-	(*RegisterResponse)(nil), // 1: auth.v1.RegisterResponse
-	(*LoginRequest)(nil),     // 2: auth.v1.LoginRequest
-	(*LoginResponse)(nil),    // 3: auth.v1.LoginResponse
+	(*RegisterRequest)(nil),             // 0: auth.v1.RegisterRequest
+	(*RegisterResponse)(nil),            // 1: auth.v1.RegisterResponse
+	(*LoginRequest)(nil),                // 2: auth.v1.LoginRequest
+	(*LoginResponse)(nil),               // 3: auth.v1.LoginResponse
+	(*GetGoogleAuthURLRequest)(nil),     // 4: auth.v1.GetGoogleAuthURLRequest
+	(*GetGoogleAuthURLResponse)(nil),    // 5: auth.v1.GetGoogleAuthURLResponse
+	(*GoogleOAuthCallbackRequest)(nil),  // 6: auth.v1.GoogleOAuthCallbackRequest
+	(*GoogleOAuthCallbackResponse)(nil), // 7: auth.v1.GoogleOAuthCallbackResponse
 }
 var file_auth_v1_auth_proto_depIdxs = []int32{
 	0, // 0: auth.v1.AuthService.Register:input_type -> auth.v1.RegisterRequest
 	2, // 1: auth.v1.AuthService.Login:input_type -> auth.v1.LoginRequest
-	1, // 2: auth.v1.AuthService.Register:output_type -> auth.v1.RegisterResponse
-	3, // 3: auth.v1.AuthService.Login:output_type -> auth.v1.LoginResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
+	4, // 2: auth.v1.AuthService.GetGoogleAuthURL:input_type -> auth.v1.GetGoogleAuthURLRequest
+	6, // 3: auth.v1.AuthService.GoogleOAuthCallback:input_type -> auth.v1.GoogleOAuthCallbackRequest
+	1, // 4: auth.v1.AuthService.Register:output_type -> auth.v1.RegisterResponse
+	3, // 5: auth.v1.AuthService.Login:output_type -> auth.v1.LoginResponse
+	5, // 6: auth.v1.AuthService.GetGoogleAuthURL:output_type -> auth.v1.GetGoogleAuthURLResponse
+	7, // 7: auth.v1.AuthService.GoogleOAuthCallback:output_type -> auth.v1.GoogleOAuthCallbackResponse
+	4, // [4:8] is the sub-list for method output_type
+	0, // [0:4] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -305,7 +520,7 @@ func file_auth_v1_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_v1_auth_proto_rawDesc), len(file_auth_v1_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

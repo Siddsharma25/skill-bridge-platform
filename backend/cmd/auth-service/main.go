@@ -74,7 +74,23 @@ func main() {
 			"match a different replica in a multi-instance deployment. Set JWT_PRIVATE_KEY_PEM in production.")
 	}
 
-	authServer := auth.NewServer(gormDB, keyPair, issuer, log)
+	// Google OAuth (Phase 1c): degrade gracefully, same pattern as the DB
+	// connection above. There is no live Google Cloud OAuth client yet
+	// (external dependency, out of this repo's control — see
+	// docs/DECISIONS.md), so GOOGLE_OAUTH_CLIENT_ID/SECRET/REDIRECT_URL are
+	// expected to be unset in local dev and CI; GetGoogleAuthURL/
+	// GoogleOAuthCallback both return a clear FailedPrecondition status
+	// instead of the service failing to start.
+	googleExchanger, googleConfigured := auth.NewGoogleExchangerFromEnv(os.Getenv)
+	if !googleConfigured {
+		log.Warn("starting without Google OAuth configured; GetGoogleAuthURL/GoogleOAuthCallback will return " +
+			"FailedPrecondition until GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and " +
+			"GOOGLE_OAUTH_REDIRECT_URL are all set")
+	} else {
+		log.Info("Google OAuth configured")
+	}
+
+	authServer := auth.NewServer(gormDB, keyPair, issuer, googleExchanger, log)
 
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),

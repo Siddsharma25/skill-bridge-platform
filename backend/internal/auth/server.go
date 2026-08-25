@@ -37,12 +37,35 @@ type Server struct {
 	keyPair *jwks.KeyPair
 	issuer  string
 	log     *zap.Logger
+
+	// googleExchanger is nil when Google OAuth isn't configured on this
+	// instance (see NewGoogleExchangerFromEnv) — GetGoogleAuthURL and
+	// GoogleOAuthCallback both degrade to FailedPrecondition rather than
+	// the process failing to start. oauthStore is derived from db (nil
+	// exactly when db is nil) except in tests, which inject a fake
+	// directly — see oauth.go and oauth_test.go.
+	googleExchanger GoogleExchanger
+	oauthStore      oauthStore
 }
 
 // NewServer constructs a Server. db, keyPair, and log must not be nil;
-// issuer becomes the JWT `iss` claim.
-func NewServer(db *gorm.DB, keyPair *jwks.KeyPair, issuer string, log *zap.Logger) *Server {
-	return &Server{db: db, keyPair: keyPair, issuer: issuer, log: log}
+// issuer becomes the JWT `iss` claim. googleExchanger may be nil — see
+// NewGoogleExchangerFromEnv — in which case the Google OAuth RPCs degrade
+// to a clear FailedPrecondition status instead of the service failing to
+// start.
+func NewServer(db *gorm.DB, keyPair *jwks.KeyPair, issuer string, googleExchanger GoogleExchanger, log *zap.Logger) *Server {
+	var store oauthStore
+	if db != nil {
+		store = &gormOAuthStore{db: db}
+	}
+	return &Server{
+		db:              db,
+		keyPair:         keyPair,
+		issuer:          issuer,
+		log:             log,
+		googleExchanger: googleExchanger,
+		oauthStore:      store,
+	}
 }
 
 // Register hashes the password with bcrypt (never stored or logged in

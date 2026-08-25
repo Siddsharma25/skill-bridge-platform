@@ -19,6 +19,7 @@ import (
 
 	jobsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/jobs/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/jobs"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/cache"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/db"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/health"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
@@ -56,7 +57,11 @@ func main() {
 		log.Info("connected to database")
 	}
 
-	jobsServer := jobs.NewServer(gormDB, log)
+	// Redis cache (Phase 1c): degrades gracefully, same pattern as the DB
+	// connection above. See internal/platform/cache and docs/DECISIONS.md.
+	redisCache := cache.NewFromEnv(os.Getenv, log)
+
+	jobsServer := jobs.NewServer(gormDB, redisCache, log)
 
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),
@@ -109,6 +114,9 @@ func main() {
 					return err
 				}
 				return sqlDB.Close()
+			},
+			func(_ context.Context) error {
+				return redisCache.Close()
 			},
 		},
 	})

@@ -266,6 +266,94 @@ func (x *ListSkillsResponse) GetSkills() []*Skill {
 	return nil
 }
 
+type GetSkillsByIdsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ids           []string               `protobuf:"bytes,1,rep,name=ids,proto3" json:"ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSkillsByIdsRequest) Reset() {
+	*x = GetSkillsByIdsRequest{}
+	mi := &file_skills_v1_skills_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSkillsByIdsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSkillsByIdsRequest) ProtoMessage() {}
+
+func (x *GetSkillsByIdsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_skills_v1_skills_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSkillsByIdsRequest.ProtoReflect.Descriptor instead.
+func (*GetSkillsByIdsRequest) Descriptor() ([]byte, []int) {
+	return file_skills_v1_skills_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetSkillsByIdsRequest) GetIds() []string {
+	if x != nil {
+		return x.Ids
+	}
+	return nil
+}
+
+type GetSkillsByIdsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Skills        []*Skill               `protobuf:"bytes,1,rep,name=skills,proto3" json:"skills,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSkillsByIdsResponse) Reset() {
+	*x = GetSkillsByIdsResponse{}
+	mi := &file_skills_v1_skills_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSkillsByIdsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSkillsByIdsResponse) ProtoMessage() {}
+
+func (x *GetSkillsByIdsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_skills_v1_skills_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSkillsByIdsResponse.ProtoReflect.Descriptor instead.
+func (*GetSkillsByIdsResponse) Descriptor() ([]byte, []int) {
+	return file_skills_v1_skills_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *GetSkillsByIdsResponse) GetSkills() []*Skill {
+	if x != nil {
+		return x.Skills
+	}
+	return nil
+}
+
 var File_skills_v1_skills_proto protoreflect.FileDescriptor
 
 const file_skills_v1_skills_proto_rawDesc = "" +
@@ -282,11 +370,16 @@ const file_skills_v1_skills_proto_rawDesc = "" +
 	"\x05skill\x18\x01 \x01(\v2\x10.skills.v1.SkillR\x05skill\"\x13\n" +
 	"\x11ListSkillsRequest\">\n" +
 	"\x12ListSkillsResponse\x12(\n" +
-	"\x06skills\x18\x01 \x03(\v2\x10.skills.v1.SkillR\x06skills2\xa8\x01\n" +
+	"\x06skills\x18\x01 \x03(\v2\x10.skills.v1.SkillR\x06skills\")\n" +
+	"\x15GetSkillsByIdsRequest\x12\x10\n" +
+	"\x03ids\x18\x01 \x03(\tR\x03ids\"B\n" +
+	"\x16GetSkillsByIdsResponse\x12(\n" +
+	"\x06skills\x18\x01 \x03(\v2\x10.skills.v1.SkillR\x06skills2\xff\x01\n" +
 	"\rSkillsService\x12L\n" +
 	"\vCreateSkill\x12\x1d.skills.v1.CreateSkillRequest\x1a\x1e.skills.v1.CreateSkillResponse\x12I\n" +
 	"\n" +
-	"ListSkills\x12\x1c.skills.v1.ListSkillsRequest\x1a\x1d.skills.v1.ListSkillsResponseB\xaf\x01\n" +
+	"ListSkills\x12\x1c.skills.v1.ListSkillsRequest\x1a\x1d.skills.v1.ListSkillsResponse\x12U\n" +
+	"\x0eGetSkillsByIds\x12 .skills.v1.GetSkillsByIdsRequest\x1a!.skills.v1.GetSkillsByIdsResponseB\xaf\x01\n" +
 	"\rcom.skills.v1B\vSkillsProtoP\x01ZLgithub.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1;skillsv1\xa2\x02\x03SXX\xaa\x02\tSkills.V1\xca\x02\tSkills\\V1\xe2\x02\x15Skills\\V1\\GPBMetadata\xea\x02\n" +
 	"Skills::V1b\x06proto3"
 
@@ -302,26 +395,31 @@ func file_skills_v1_skills_proto_rawDescGZIP() []byte {
 	return file_skills_v1_skills_proto_rawDescData
 }
 
-var file_skills_v1_skills_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_skills_v1_skills_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_skills_v1_skills_proto_goTypes = []any{
-	(*Skill)(nil),               // 0: skills.v1.Skill
-	(*CreateSkillRequest)(nil),  // 1: skills.v1.CreateSkillRequest
-	(*CreateSkillResponse)(nil), // 2: skills.v1.CreateSkillResponse
-	(*ListSkillsRequest)(nil),   // 3: skills.v1.ListSkillsRequest
-	(*ListSkillsResponse)(nil),  // 4: skills.v1.ListSkillsResponse
+	(*Skill)(nil),                  // 0: skills.v1.Skill
+	(*CreateSkillRequest)(nil),     // 1: skills.v1.CreateSkillRequest
+	(*CreateSkillResponse)(nil),    // 2: skills.v1.CreateSkillResponse
+	(*ListSkillsRequest)(nil),      // 3: skills.v1.ListSkillsRequest
+	(*ListSkillsResponse)(nil),     // 4: skills.v1.ListSkillsResponse
+	(*GetSkillsByIdsRequest)(nil),  // 5: skills.v1.GetSkillsByIdsRequest
+	(*GetSkillsByIdsResponse)(nil), // 6: skills.v1.GetSkillsByIdsResponse
 }
 var file_skills_v1_skills_proto_depIdxs = []int32{
 	0, // 0: skills.v1.CreateSkillResponse.skill:type_name -> skills.v1.Skill
 	0, // 1: skills.v1.ListSkillsResponse.skills:type_name -> skills.v1.Skill
-	1, // 2: skills.v1.SkillsService.CreateSkill:input_type -> skills.v1.CreateSkillRequest
-	3, // 3: skills.v1.SkillsService.ListSkills:input_type -> skills.v1.ListSkillsRequest
-	2, // 4: skills.v1.SkillsService.CreateSkill:output_type -> skills.v1.CreateSkillResponse
-	4, // 5: skills.v1.SkillsService.ListSkills:output_type -> skills.v1.ListSkillsResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0, // 2: skills.v1.GetSkillsByIdsResponse.skills:type_name -> skills.v1.Skill
+	1, // 3: skills.v1.SkillsService.CreateSkill:input_type -> skills.v1.CreateSkillRequest
+	3, // 4: skills.v1.SkillsService.ListSkills:input_type -> skills.v1.ListSkillsRequest
+	5, // 5: skills.v1.SkillsService.GetSkillsByIds:input_type -> skills.v1.GetSkillsByIdsRequest
+	2, // 6: skills.v1.SkillsService.CreateSkill:output_type -> skills.v1.CreateSkillResponse
+	4, // 7: skills.v1.SkillsService.ListSkills:output_type -> skills.v1.ListSkillsResponse
+	6, // 8: skills.v1.SkillsService.GetSkillsByIds:output_type -> skills.v1.GetSkillsByIdsResponse
+	6, // [6:9] is the sub-list for method output_type
+	3, // [3:6] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_skills_v1_skills_proto_init() }
@@ -335,7 +433,7 @@ func file_skills_v1_skills_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_skills_v1_skills_proto_rawDesc), len(file_skills_v1_skills_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

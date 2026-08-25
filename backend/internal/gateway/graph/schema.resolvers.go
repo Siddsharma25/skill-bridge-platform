@@ -20,14 +20,13 @@ import (
 
 // RequiredSkills is the resolver for the Job.requiredSkills field. It
 // resolves every skill_id jobs-service attached to this job against
-// skills-service's data — see resolveSkills for why that means fetching
-// the whole taxonomy and filtering locally (skills-service has no
-// single-ID lookup RPC). One ListSkills call per Job object returned by a
-// `jobs`/`job` query is a deliberate, small N+1 across sibling jobs.
-// TODO(phase 1c): dataloader — batch this across every Job in the same
-// response instead of one call each.
+// skills-service via the per-request dataloader (see
+// resolveSkillsViaLoader), which batches every id needed across every
+// Job in the same `jobs`/`job` response into one GetSkillsByIds call
+// instead of the Phase 1b pattern of one ListSkills call per Job — see
+// docs/DECISIONS.md.
 func (r *jobResolver) RequiredSkills(ctx context.Context, obj *model.Job) ([]*model.Skill, error) {
-	return r.resolveSkills(ctx, obj.RequiredSkillIDs)
+	return r.resolveSkillsViaLoader(ctx, obj.RequiredSkillIDs)
 }
 
 // Register is the resolver for the register field. It's a thin pass-through
@@ -56,6 +55,21 @@ func (r *mutationResolver) Login(ctx context.Context, email string, password str
 	// claim locally if it needs the ID without a second round trip.
 	return &model.AuthPayload{
 		AccessToken: resp.GetAccessToken(),
+	}, nil
+}
+
+// GoogleOAuthCallback is the resolver for the googleOAuthCallback field.
+// Thin pass-through to auth-service's GoogleOAuthCallback RPC, same shape
+// as Register/Login — see docs/DECISIONS.md for the account-linking rule
+// this ultimately triggers on auth-service's side.
+func (r *mutationResolver) GoogleOAuthCallback(ctx context.Context, code string) (*model.AuthPayload, error) {
+	resp, err := r.AuthClient.GoogleOAuthCallback(ctx, &authv1.GoogleOAuthCallbackRequest{Code: code})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	return &model.AuthPayload{
+		AccessToken: resp.GetAccessToken(),
+		UserID:      resp.GetUserId(),
 	}, nil
 }
 
@@ -145,6 +159,18 @@ func (r *queryResolver) Ping(_ context.Context) (string, error) {
 	return "pong", nil
 }
 
+// GoogleAuthURL is the resolver for the googleAuthUrl field. Thin
+// pass-through to auth-service's GetGoogleAuthURL RPC — state is forwarded
+// verbatim; auth-service is stateless and never generates or remembers it
+// itself (see auth.proto's GetGoogleAuthURLRequest and docs/DECISIONS.md).
+func (r *queryResolver) GoogleAuthURL(ctx context.Context, state string) (string, error) {
+	resp, err := r.AuthClient.GetGoogleAuthURL(ctx, &authv1.GetGoogleAuthURLRequest{State: state})
+	if err != nil {
+		return "", translateGRPCError(err)
+	}
+	return resp.GetAuthUrl(), nil
+}
+
 // Skills is the resolver for the Query.skills field. Unauthenticated.
 func (r *queryResolver) Skills(ctx context.Context) ([]*model.Skill, error) {
 	resp, err := r.SkillsClient.ListSkills(ctx, &skillsv1.ListSkillsRequest{})
@@ -200,10 +226,10 @@ func (r *queryResolver) MyProfile(ctx context.Context) (*model.Profile, error) {
 	return toModelProfile(resp.GetProfile()), nil
 }
 
-// Skill is the resolver for the UserSkill.skill field. Same deliberate N+1
-// as Job.requiredSkills — see resolveSkills.
+// Skill is the resolver for the UserSkill.skill field. Same batched path
+// as Job.requiredSkills — see resolveSkillsViaLoader.
 func (r *userSkillResolver) Skill(ctx context.Context, obj *model.UserSkill) (*model.Skill, error) {
-	skills, err := r.resolveSkills(ctx, []string{obj.SkillID})
+	skills, err := r.resolveSkillsViaLoader(ctx, []string{obj.SkillID})
 	if err != nil {
 		return nil, err
 	}

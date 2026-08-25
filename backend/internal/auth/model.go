@@ -24,3 +24,29 @@ type Credential struct {
 func (Credential) TableName() string {
 	return "auth.credentials"
 }
+
+// OAuthIdentity is the GORM model backing auth.oauth_identities (see
+// backend/migrations/auth/00002_create_oauth_identities.sql) — a
+// third-party identity (Google, today) linked to exactly one Credential.
+// See oauth.go for the account-linking logic that decides whether a given
+// Google login creates a new Credential or attaches to an existing one.
+type OAuthIdentity struct {
+	ID              string    `gorm:"column:id;primaryKey"`
+	UserID          string    `gorm:"column:user_id"`
+	Provider        string    `gorm:"column:provider"`
+	ProviderSubject string    `gorm:"column:provider_subject"`
+	Email           string    `gorm:"column:email"`
+	CreatedAt       time.Time `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt       time.Time `gorm:"column:updated_at;autoUpdateTime"`
+}
+
+// TableName pins this model to the auth schema explicitly.
+func (OAuthIdentity) TableName() string {
+	return "auth.oauth_identities"
+}
+
+// ProviderGoogle is the only OAuthIdentity.Provider value this codebase
+// issues today; kept as a named constant rather than a magic string since
+// it appears in both the write path (oauth.go) and any future query that
+// filters by provider.
+const ProviderGoogle = "google"

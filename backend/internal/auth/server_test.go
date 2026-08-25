@@ -29,8 +29,9 @@ func testServer(t *testing.T) *Server {
 	}
 	log := zap.NewNop()
 	// db is intentionally nil: these tests only exercise validation and
-	// the "database not configured" degrade path.
-	return NewServer(nil, kp, "test-issuer", log)
+	// the "database not configured" degrade path. googleExchanger is also
+	// nil (not exercised here) — see oauth_test.go.
+	return NewServer(nil, kp, "test-issuer", nil, log)
 }
 
 func TestRegister_RejectsMissingFields(t *testing.T) {

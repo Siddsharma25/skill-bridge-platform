@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/99designs/gqlgen/graphql/handler"
@@ -27,8 +28,11 @@ import (
 	skillsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1"
 	usersv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/authctx"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/dataloader"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/graph/generated"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/gateway/ratelimit"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/cache"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/health"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/jwks"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
@@ -55,6 +59,29 @@ func main() {
 	skillsServiceAddr := envOr("SKILLS_SERVICE_ADDR", "localhost:9002")
 	usersServiceAddr := envOr("USERS_SERVICE_ADDR", "localhost:9003")
 	jobsServiceAddr := envOr("JOBS_SERVICE_ADDR", "localhost:9004")
+
+	// Redis-backed rate limiting (Phase 1c). Same degrade-gracefully
+	// pattern as skills-service/jobs-service's caching: an unset or
+	// unreachable REDIS_URL means ratelimit.Middleware fails open (logs
+	// and allows every request through) rather than the gateway failing
+	// to start or rejecting traffic it can't actually count — see
+	// internal/platform/cache and docs/DECISIONS.md.
+	redisClient := cache.NewFromEnv(os.Getenv, log)
+	rateLimitCfg := ratelimit.DefaultConfig
+	if v := os.Getenv("RATE_LIMIT_REQUESTS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			rateLimitCfg.Limit = n
+		} else {
+			log.Warn("ignoring invalid RATE_LIMIT_REQUESTS; using default", zap.String("value", v))
+		}
+	}
+	if v := os.Getenv("RATE_LIMIT_WINDOW_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rateLimitCfg.Window = time.Duration(n) * time.Second
+		} else {
+			log.Warn("ignoring invalid RATE_LIMIT_WINDOW_SECONDS; using default", zap.String("value", v))
+		}
+	}
 
 	// Dial auth-service. grpc.NewClient (not the deprecated blocking
 	// DialContext+WithBlock) connects lazily — the gateway starts even if
@@ -153,11 +180,28 @@ func main() {
 		mux.Handle("/", playground.Handler("GraphQL Playground", "/query"))
 		log.Info("GraphQL Playground enabled at /")
 	}
-	// authctx.Middleware extracts and verifies a bearer token (if any)
-	// before the GraphQL handler runs, so myProfile/updateProfile/
-	// addUserSkill's requireUserID check (schema.resolvers.go) can read
-	// the verified caller — see docs/DECISIONS.md.
-	mux.Handle("/query", authctx.Middleware(jwksClient, log)(srv))
+	// Composition order (outermost to innermost), each wrapping the next:
+	//
+	//  1. authctx.Middleware — extracts and verifies a bearer token (if
+	//     any) first, so both ratelimit.Middleware (keying by user ID when
+	//     available) and every resolver's requireUserID check can read the
+	//     verified caller from context. Never rejects here — see its own
+	//     doc comment.
+	//  2. ratelimit.Middleware — enforces the fixed-window budget. Must run
+	//     after authctx so it can see the verified user ID, and before the
+	//     GraphQL handler so a rejected request never reaches gqlgen at
+	//     all. See internal/gateway/ratelimit and docs/DECISIONS.md.
+	//  3. dataloader.Middleware — attaches a fresh per-request Loaders to
+	//     context, batching every skill_id the response's resolvers need
+	//     into one skills-service call (see internal/gateway/dataloader
+	//     and Job.requiredSkills/Profile.skills/UserSkill.skill in
+	//     schema.resolvers.go).
+	//  4. srv — the actual GraphQL execution.
+	mux.Handle("/query", authctx.Middleware(jwksClient, log)(
+		ratelimit.Middleware(redisClient, rateLimitCfg, log)(
+			dataloader.Middleware(skillsClient)(srv),
+		),
+	))
 
 	httpServer := &http.Server{
 		Addr:              ":" + httpPort,
@@ -186,6 +230,9 @@ func main() {
 			},
 			func(_ context.Context) error {
 				return jobsConn.Close()
+			},
+			func(_ context.Context) error {
+				return redisClient.Close()
 			},
 		},
 	})

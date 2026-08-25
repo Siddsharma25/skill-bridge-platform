@@ -52,12 +52,13 @@ type ComplexityRoot struct {
 	}
 
 	Mutation struct {
-		AddUserSkill  func(childComplexity int, skillID string, proficiency string) int
-		CreateJob     func(childComplexity int, title string, description string, requiredSkillIds []string) int
-		CreateSkill   func(childComplexity int, name string, category string) int
-		Login         func(childComplexity int, email string, password string) int
-		Register      func(childComplexity int, email string, password string) int
-		UpdateProfile func(childComplexity int, displayName *string, bio *string) int
+		AddUserSkill        func(childComplexity int, skillID string, proficiency string) int
+		CreateJob           func(childComplexity int, title string, description string, requiredSkillIds []string) int
+		CreateSkill         func(childComplexity int, name string, category string) int
+		GoogleOAuthCallback func(childComplexity int, code string) int
+		Login               func(childComplexity int, email string, password string) int
+		Register            func(childComplexity int, email string, password string) int
+		UpdateProfile       func(childComplexity int, displayName *string, bio *string) int
 	}
 
 	Profile struct {
@@ -68,11 +69,12 @@ type ComplexityRoot struct {
 	}
 
 	Query struct {
-		Job       func(childComplexity int, id string) int
-		Jobs      func(childComplexity int) int
-		MyProfile func(childComplexity int) int
-		Ping      func(childComplexity int) int
-		Skills    func(childComplexity int) int
+		GoogleAuthURL func(childComplexity int, state string) int
+		Job           func(childComplexity int, id string) int
+		Jobs          func(childComplexity int) int
+		MyProfile     func(childComplexity int) int
+		Ping          func(childComplexity int) int
+		Skills        func(childComplexity int) int
 	}
 
 	Skill struct {
@@ -97,6 +99,7 @@ type JobResolver interface {
 type MutationResolver interface {
 	Register(ctx context.Context, email string, password string) (*model.AuthPayload, error)
 	Login(ctx context.Context, email string, password string) (*model.AuthPayload, error)
+	GoogleOAuthCallback(ctx context.Context, code string) (*model.AuthPayload, error)
 	CreateSkill(ctx context.Context, name string, category string) (*model.Skill, error)
 	CreateJob(ctx context.Context, title string, description string, requiredSkillIds []string) (*model.Job, error)
 	UpdateProfile(ctx context.Context, displayName *string, bio *string) (*model.Profile, error)
@@ -107,6 +110,7 @@ type ProfileResolver interface {
 }
 type QueryResolver interface {
 	Ping(ctx context.Context) (string, error)
+	GoogleAuthURL(ctx context.Context, state string) (string, error)
 	Skills(ctx context.Context) ([]*model.Skill, error)
 	Jobs(ctx context.Context) ([]*model.Job, error)
 	Job(ctx context.Context, id string) (*model.Job, error)
@@ -205,6 +209,17 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Mutation.CreateSkill(childComplexity, args["name"].(string), args["category"].(string)), true
+	case "Mutation.googleOAuthCallback":
+		if e.ComplexityRoot.Mutation.GoogleOAuthCallback == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_googleOAuthCallback_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.ComplexityRoot.Mutation.GoogleOAuthCallback(childComplexity, args["code"].(string)), true
 	case "Mutation.login":
 		if e.ComplexityRoot.Mutation.Login == nil {
 			break
@@ -263,6 +278,18 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Profile.UserID(childComplexity), true
+
+	case "Query.googleAuthUrl":
+		if e.ComplexityRoot.Query.GoogleAuthURL == nil {
+			break
+		}
+
+		args, err := ec.field_Query_googleAuthUrl_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.ComplexityRoot.Query.GoogleAuthURL(childComplexity, args["state"].(string)), true
 
 	case "Query.job":
 		if e.ComplexityRoot.Query.Job == nil {
@@ -438,10 +465,11 @@ type Skill {
 
 # Job mirrors jobs-service's Job message, except requiredSkillIds (opaque
 # skills-service IDs on the wire) is resolved to full Skill objects here.
-# That resolution is a deliberate small N+1 (one skills-service call per
-# Job in a list) — see the requiredSkills field resolver in
-# schema.resolvers.go and docs/DECISIONS.md; left for Phase 1c's
-# dataloader work rather than solved now.
+# Phase 1b resolved this with a deliberate small N+1 (one ListSkills call
+# per Job in a list); Phase 1c replaced it with a per-request dataloader
+# that batches every skill_id needed across a whole response into one
+# GetSkillsByIds call — see the requiredSkills field resolver in
+# schema.resolvers.go and docs/DECISIONS.md.
 type Job {
   id: ID!
   title: String!
@@ -450,8 +478,8 @@ type Job {
 }
 
 # UserSkill pairs one of a user's claimed skills (resolved from
-# skills-service by ID, same N+1 caveat as Job.requiredSkills) with the
-# proficiency users-service stored for it.
+# skills-service by ID via the same dataloader as Job.requiredSkills) with
+# the proficiency users-service stored for it.
 type UserSkill {
   skill: Skill!
   proficiency: String!
@@ -481,6 +509,19 @@ type Mutation {
   unknown email or a wrong password.
   """
   login(email: String!, password: String!): AuthPayload!
+
+  """
+  Exchanges a Google OAuth authorization code (from Google's redirect back
+  to the client after consent) for one of this platform's own access
+  tokens. Applies the account-linking rule documented on auth-service's
+  linkOrCreateGoogleUser and in docs/DECISIONS.md: an existing identity for
+  this Google account wins outright; failing that, an existing
+  password-registered credential for the same email is linked to rather
+  than duplicated; failing both, a new account is created. Returns a
+  GraphQL error (translated from FailedPrecondition) if Google OAuth isn't
+  configured on this instance — see auth.proto's GoogleOAuthCallback.
+  """
+  googleOAuthCallback(code: String!): AuthPayload!
 
   """
   Adds a new skill to the shared taxonomy. Unauthenticated in Phase 1b —
@@ -516,6 +557,17 @@ type Query {
   specifically (parsing, resolver dispatch) rather than just the process.
   """
   ping: String!
+
+  """
+  Returns the URL a client should redirect the user's browser to in order
+  to start the Google OAuth consent flow. ` + "`" + `state` + "`" + ` is an opaque
+  CSRF-protection value the caller generates and must verify comes back
+  unchanged from Google's redirect — auth-service is stateless and does
+  not generate or remember it (see auth.proto's GetGoogleAuthURLRequest
+  and docs/DECISIONS.md). Returns a GraphQL error (translated from
+  FailedPrecondition) if Google OAuth isn't configured on this instance.
+  """
+  googleAuthUrl(state: String!): String!
 
   "Returns every skill in the shared taxonomy. Unauthenticated."
   skills: [Skill!]!
@@ -790,6 +842,20 @@ func (ec *executionContext) field_Mutation_createSkill_args(ctx context.Context,
 	return args, nil
 }
 
+func (ec *executionContext) field_Mutation_googleOAuthCallback_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "code",
+		func(ctx context.Context, v any) (string, error) {
+			return ec.unmarshalNString2string(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["code"] = arg0
+	return args, nil
+}
+
 func (ec *executionContext) field_Mutation_login_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
@@ -867,6 +933,20 @@ func (ec *executionContext) field_Query___type_args(ctx context.Context, rawArgs
 		return nil, err
 	}
 	args["name"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Query_googleAuthUrl_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "state",
+		func(ctx context.Context, v any) (string, error) {
+			return ec.unmarshalNString2string(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["state"] = arg0
 	return args, nil
 }
 
@@ -1179,6 +1259,50 @@ func (ec *executionContext) fieldContext_Mutation_login(ctx context.Context, fie
 	return fc, nil
 }
 
+func (ec *executionContext) _Mutation_googleOAuthCallback(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Mutation_googleOAuthCallback(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.Resolvers.Mutation().GoogleOAuthCallback(ctx, fc.Args["code"].(string))
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v *model.AuthPayload) graphql.Marshaler {
+			return ec.marshalNAuthPayload2ᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐAuthPayload(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Mutation_googleOAuthCallback(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.childFields_AuthPayload(ctx, field)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Mutation_googleOAuthCallback_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Mutation_createSkill(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -1477,6 +1601,50 @@ func (ec *executionContext) _Query_ping(ctx context.Context, field graphql.Colle
 }
 func (ec *executionContext) fieldContext_Query_ping(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	return graphql.NewScalarFieldContext("Query", field, true, true, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _Query_googleAuthUrl(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Query_googleAuthUrl(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.Resolvers.Query().GoogleAuthURL(ctx, fc.Args["state"].(string))
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Query_googleAuthUrl(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_googleAuthUrl_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
 }
 
 func (ec *executionContext) _Query_skills(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -3049,6 +3217,13 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "googleOAuthCallback":
+			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
+				return ec._Mutation_googleOAuthCallback(ctx, field)
+			})
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		case "createSkill":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Mutation_createSkill(ctx, field)
@@ -3214,6 +3389,28 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 					}
 				}()
 				res = ec._Query_ping(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "googleAuthUrl":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_googleAuthUrl(ctx, field)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}

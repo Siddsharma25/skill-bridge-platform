@@ -31,8 +31,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AuthService_Register_FullMethodName = "/auth.v1.AuthService/Register"
-	AuthService_Login_FullMethodName    = "/auth.v1.AuthService/Login"
+	AuthService_Register_FullMethodName            = "/auth.v1.AuthService/Register"
+	AuthService_Login_FullMethodName               = "/auth.v1.AuthService/Login"
+	AuthService_GetGoogleAuthURL_FullMethodName    = "/auth.v1.AuthService/GetGoogleAuthURL"
+	AuthService_GoogleOAuthCallback_FullMethodName = "/auth.v1.AuthService/GoogleOAuthCallback"
 )
 
 // AuthServiceClient is the client API for AuthService service.
@@ -44,9 +46,10 @@ const (
 // touches: the api-gateway forwards raw credentials over gRPC (private
 // network only) and never sees or stores a hash itself.
 //
-// Google OAuth (Phase 1c) and refresh-token rotation are intentionally out
-// of scope for this first version — see docs/DECISIONS.md for the phase
-// boundary.
+// Google OAuth (Phase 1c, see GetGoogleAuthURL/GoogleOAuthCallback below)
+// and refresh-token rotation are the two things Phase 1a's comment here
+// deferred; refresh-token rotation is still out of scope — see
+// docs/DECISIONS.md for the phase boundary.
 type AuthServiceClient interface {
 	// Register creates a new credential record (email + bcrypt password
 	// hash) and immediately issues an access token, so a client can move
@@ -58,6 +61,23 @@ type AuthServiceClient interface {
 	// does not distinguish "no such user" from "wrong password" in the error
 	// message — that distinction is a user-enumeration side channel.
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginResponse, error)
+	// GetGoogleAuthURL returns the URL a client should redirect the user's
+	// browser to in order to start the Google consent flow. Returns
+	// FailedPrecondition if GOOGLE_OAUTH_CLIENT_ID/SECRET/REDIRECT_URL aren't
+	// configured on this instance (see docs/DECISIONS.md — no real Google
+	// Cloud OAuth client exists yet, so this degrades the same way a missing
+	// DATABASE_URL does elsewhere in this codebase, rather than the process
+	// failing to start).
+	GetGoogleAuthURL(ctx context.Context, in *GetGoogleAuthURLRequest, opts ...grpc.CallOption) (*GetGoogleAuthURLResponse, error)
+	// GoogleOAuthCallback exchanges an authorization code (from Google's
+	// redirect back to the client after consent) for one of this platform's
+	// own access tokens. See docs/DECISIONS.md for the account-linking rule:
+	// an existing auth.oauth_identities row for the same Google subject wins
+	// outright; failing that, an existing auth.credentials row for the same
+	// email is linked to rather than duplicated; failing that, a new
+	// credential + identity pair is created. Returns FailedPrecondition under
+	// the same missing-config condition as GetGoogleAuthURL.
+	GoogleOAuthCallback(ctx context.Context, in *GoogleOAuthCallbackRequest, opts ...grpc.CallOption) (*GoogleOAuthCallbackResponse, error)
 }
 
 type authServiceClient struct {
@@ -88,6 +108,26 @@ func (c *authServiceClient) Login(ctx context.Context, in *LoginRequest, opts ..
 	return out, nil
 }
 
+func (c *authServiceClient) GetGoogleAuthURL(ctx context.Context, in *GetGoogleAuthURLRequest, opts ...grpc.CallOption) (*GetGoogleAuthURLResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetGoogleAuthURLResponse)
+	err := c.cc.Invoke(ctx, AuthService_GetGoogleAuthURL_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) GoogleOAuthCallback(ctx context.Context, in *GoogleOAuthCallbackRequest, opts ...grpc.CallOption) (*GoogleOAuthCallbackResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GoogleOAuthCallbackResponse)
+	err := c.cc.Invoke(ctx, AuthService_GoogleOAuthCallback_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuthServiceServer is the server API for AuthService service.
 // All implementations must embed UnimplementedAuthServiceServer
 // for forward compatibility.
@@ -97,9 +137,10 @@ func (c *authServiceClient) Login(ctx context.Context, in *LoginRequest, opts ..
 // touches: the api-gateway forwards raw credentials over gRPC (private
 // network only) and never sees or stores a hash itself.
 //
-// Google OAuth (Phase 1c) and refresh-token rotation are intentionally out
-// of scope for this first version — see docs/DECISIONS.md for the phase
-// boundary.
+// Google OAuth (Phase 1c, see GetGoogleAuthURL/GoogleOAuthCallback below)
+// and refresh-token rotation are the two things Phase 1a's comment here
+// deferred; refresh-token rotation is still out of scope — see
+// docs/DECISIONS.md for the phase boundary.
 type AuthServiceServer interface {
 	// Register creates a new credential record (email + bcrypt password
 	// hash) and immediately issues an access token, so a client can move
@@ -111,6 +152,23 @@ type AuthServiceServer interface {
 	// does not distinguish "no such user" from "wrong password" in the error
 	// message — that distinction is a user-enumeration side channel.
 	Login(context.Context, *LoginRequest) (*LoginResponse, error)
+	// GetGoogleAuthURL returns the URL a client should redirect the user's
+	// browser to in order to start the Google consent flow. Returns
+	// FailedPrecondition if GOOGLE_OAUTH_CLIENT_ID/SECRET/REDIRECT_URL aren't
+	// configured on this instance (see docs/DECISIONS.md — no real Google
+	// Cloud OAuth client exists yet, so this degrades the same way a missing
+	// DATABASE_URL does elsewhere in this codebase, rather than the process
+	// failing to start).
+	GetGoogleAuthURL(context.Context, *GetGoogleAuthURLRequest) (*GetGoogleAuthURLResponse, error)
+	// GoogleOAuthCallback exchanges an authorization code (from Google's
+	// redirect back to the client after consent) for one of this platform's
+	// own access tokens. See docs/DECISIONS.md for the account-linking rule:
+	// an existing auth.oauth_identities row for the same Google subject wins
+	// outright; failing that, an existing auth.credentials row for the same
+	// email is linked to rather than duplicated; failing that, a new
+	// credential + identity pair is created. Returns FailedPrecondition under
+	// the same missing-config condition as GetGoogleAuthURL.
+	GoogleOAuthCallback(context.Context, *GoogleOAuthCallbackRequest) (*GoogleOAuthCallbackResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
 }
 
@@ -126,6 +184,12 @@ func (UnimplementedAuthServiceServer) Register(context.Context, *RegisterRequest
 }
 func (UnimplementedAuthServiceServer) Login(context.Context, *LoginRequest) (*LoginResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Login not implemented")
+}
+func (UnimplementedAuthServiceServer) GetGoogleAuthURL(context.Context, *GetGoogleAuthURLRequest) (*GetGoogleAuthURLResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetGoogleAuthURL not implemented")
+}
+func (UnimplementedAuthServiceServer) GoogleOAuthCallback(context.Context, *GoogleOAuthCallbackRequest) (*GoogleOAuthCallbackResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GoogleOAuthCallback not implemented")
 }
 func (UnimplementedAuthServiceServer) mustEmbedUnimplementedAuthServiceServer() {}
 func (UnimplementedAuthServiceServer) testEmbeddedByValue()                     {}
@@ -184,6 +248,42 @@ func _AuthService_Login_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_GetGoogleAuthURL_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetGoogleAuthURLRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).GetGoogleAuthURL(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_GetGoogleAuthURL_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).GetGoogleAuthURL(ctx, req.(*GetGoogleAuthURLRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_GoogleOAuthCallback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GoogleOAuthCallbackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).GoogleOAuthCallback(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_GoogleOAuthCallback_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).GoogleOAuthCallback(ctx, req.(*GoogleOAuthCallbackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuthService_ServiceDesc is the grpc.ServiceDesc for AuthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -198,6 +298,14 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Login",
 			Handler:    _AuthService_Login_Handler,
+		},
+		{
+			MethodName: "GetGoogleAuthURL",
+			Handler:    _AuthService_GetGoogleAuthURL_Handler,
+		},
+		{
+			MethodName: "GoogleOAuthCallback",
+			Handler:    _AuthService_GoogleOAuthCallback_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
