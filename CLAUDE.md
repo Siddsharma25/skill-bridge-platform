@@ -27,6 +27,7 @@ cd backend && make lint
 - Every Go service gets health/readiness endpoints, graceful shutdown, and `x-request-id` propagation from `internal/platform` — these aren't optional per-service boilerplate to skip.
 - Each service/module has its own short README explaining what it does and why it's built that way — update it alongside the code, don't batch it at the end.
 - Nested `frontend/CLAUDE.md` and `backend/CLAUDE.md` hold stack-specific conventions; this file stays high-level.
+- **Whenever a new doc is created anywhere in this repo (a new README, a new file under `docs/`, etc.), add it to `docs/INDEX.md`** in the same commit — that file is the map of every document in the repo, and it's only useful if it's actually complete. Don't batch this for later.
 
 ## Efficiency conventions for background agents (any part of this repo)
 
