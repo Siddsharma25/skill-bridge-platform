@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,7 +11,25 @@ import (
 	"google.golang.org/grpc/status"
 
 	skillsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1"
+	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
 )
+
+// fakePublisher is a trivial in-memory stand-in for kafka.Publisher —
+// captures every Publish call so a test can assert an event was
+// published exactly once, with the expected topic/key/payload, without a
+// real Kafka broker.
+type fakePublisher struct {
+	calls []publishCall
+}
+
+type publishCall struct {
+	topic, key string
+	value      []byte
+}
+
+func (f *fakePublisher) Publish(_ context.Context, topic, key string, value []byte) {
+	f.calls = append(f.calls, publishCall{topic: topic, key: key, value: value})
+}
 
 // fakeCache is a map-based in-memory stand-in for cache.Cache — no real
 // Redis needed to prove the write-through caching behavior below. It's
@@ -46,7 +65,7 @@ func (f *fakeCache) Del(_ context.Context, keys ...string) {
 // second call is only possible if the cache hit truly short-circuited it.
 func TestListSkills_CacheHitShortCircuitsDatabase(t *testing.T) {
 	fc := newFakeCache()
-	s := NewServer(nil, fc, zap.NewNop())
+	s := NewServer(nil, fc, nil, zap.NewNop())
 
 	fetchCalls := 0
 	canned := []Skill{{ID: "1", Name: "Go", Category: "Languages"}}
@@ -87,7 +106,7 @@ func TestListSkills_CacheHitShortCircuitsDatabase(t *testing.T) {
 // data — i.e. the cache-hit shortcut in the test above isn't just always
 // returning early regardless of whether anything is cached.
 func TestListSkills_CacheMissFallsThroughToDatabase(t *testing.T) {
-	s := NewServer(nil, newFakeCache(), zap.NewNop())
+	s := NewServer(nil, newFakeCache(), nil, zap.NewNop())
 	_, err := s.ListSkills(context.Background(), &skillsv1.ListSkillsRequest{})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("expected Unavailable on a cache miss with no database configured, got %v", err)
@@ -101,7 +120,7 @@ func TestListSkills_CacheMissFallsThroughToDatabase(t *testing.T) {
 // production; here it just proves the cache entry is gone).
 func TestCreateSkill_InvalidatesCache(t *testing.T) {
 	fc := newFakeCache()
-	s := NewServer(nil, fc, zap.NewNop())
+	s := NewServer(nil, fc, nil, zap.NewNop())
 	s.fetchAllSkills = func(_ context.Context) ([]Skill, error) {
 		return []Skill{{ID: "1", Name: "Go", Category: "Languages"}}, nil
 	}
@@ -126,7 +145,7 @@ func TestCreateSkill_InvalidatesCache(t *testing.T) {
 }
 
 func TestCreateSkill_RejectsMissingFields(t *testing.T) {
-	s := NewServer(nil, newFakeCache(), zap.NewNop())
+	s := NewServer(nil, newFakeCache(), nil, zap.NewNop())
 	_, err := s.CreateSkill(context.Background(), &skillsv1.CreateSkillRequest{Name: "", Category: ""})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
@@ -134,9 +153,58 @@ func TestCreateSkill_RejectsMissingFields(t *testing.T) {
 }
 
 func TestCreateSkill_NoDBReturnsUnavailable(t *testing.T) {
-	s := NewServer(nil, newFakeCache(), zap.NewNop())
+	s := NewServer(nil, newFakeCache(), nil, zap.NewNop())
 	_, err := s.CreateSkill(context.Background(), &skillsv1.CreateSkillRequest{Name: "Go", Category: "Languages"})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("expected Unavailable when db is nil, got %v", err)
+	}
+}
+
+// TestCreateSkill_PublishesSkillUpdatedEvent proves the Phase 2 addition:
+// a successful CreateSkill publishes skill.updated (in addition to its
+// existing skills:all DEL) so jobs-service's cross-service cache
+// invalidator can evict its own jobs:all entry — see docs/DECISIONS.md.
+func TestCreateSkill_PublishesSkillUpdatedEvent(t *testing.T) {
+	fp := &fakePublisher{}
+	s := NewServer(nil, newFakeCache(), fp, zap.NewNop())
+	s.insertSkill = func(_ context.Context, skill *Skill) error {
+		skill.ID = "skill-123"
+		return nil
+	}
+
+	if _, err := s.CreateSkill(context.Background(), &skillsv1.CreateSkillRequest{Name: "Go", Category: "Languages"}); err != nil {
+		t.Fatalf("CreateSkill failed: %v", err)
+	}
+
+	if len(fp.calls) != 1 {
+		t.Fatalf("expected exactly 1 published event, got %d", len(fp.calls))
+	}
+	call := fp.calls[0]
+	if call.topic != kafkaplat.TopicSkillUpdated {
+		t.Fatalf("expected topic %q, got %q", kafkaplat.TopicSkillUpdated, call.topic)
+	}
+	if call.key != "skill-123" {
+		t.Fatalf("expected key %q, got %q", "skill-123", call.key)
+	}
+	var evt kafkaplat.SkillUpdated
+	if err := json.Unmarshal(call.value, &evt); err != nil {
+		t.Fatalf("failed to decode published payload: %v", err)
+	}
+	if evt.SkillID != "skill-123" {
+		t.Fatalf("expected skill_id %q in payload, got %q", "skill-123", evt.SkillID)
+	}
+}
+
+// TestCreateSkill_NoPublisherStillSucceeds proves CreateSkill works with a
+// nil publisher (Kafka not configured on this instance) — publishing is
+// best-effort, never a correctness dependency for the primary write.
+func TestCreateSkill_NoPublisherStillSucceeds(t *testing.T) {
+	s := NewServer(nil, newFakeCache(), nil, zap.NewNop())
+	s.insertSkill = func(_ context.Context, skill *Skill) error {
+		skill.ID = "skill-1"
+		return nil
+	}
+	if _, err := s.CreateSkill(context.Background(), &skillsv1.CreateSkillRequest{Name: "Go", Category: "Languages"}); err != nil {
+		t.Fatalf("CreateSkill failed with nil publisher: %v", err)
 	}
 }

@@ -47,8 +47,15 @@ type ComplexityRoot struct {
 	Job struct {
 		Description    func(childComplexity int) int
 		ID             func(childComplexity int) int
+		Matches        func(childComplexity int) int
 		RequiredSkills func(childComplexity int) int
 		Title          func(childComplexity int) int
+	}
+
+	JobMatch struct {
+		MatchedAt func(childComplexity int) int
+		Score     func(childComplexity int) int
+		UserID    func(childComplexity int) int
 	}
 
 	Mutation struct {
@@ -95,6 +102,7 @@ type ComplexityRoot struct {
 
 type JobResolver interface {
 	RequiredSkills(ctx context.Context, obj *model.Job) ([]*model.Skill, error)
+	Matches(ctx context.Context, obj *model.Job) ([]*model.JobMatch, error)
 }
 type MutationResolver interface {
 	Register(ctx context.Context, email string, password string) (*model.AuthPayload, error)
@@ -163,6 +171,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Job.ID(childComplexity), true
+	case "Job.matches":
+		if e.ComplexityRoot.Job.Matches == nil {
+			break
+		}
+
+		return e.ComplexityRoot.Job.Matches(childComplexity), true
 	case "Job.requiredSkills":
 		if e.ComplexityRoot.Job.RequiredSkills == nil {
 			break
@@ -175,6 +189,25 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Job.Title(childComplexity), true
+
+	case "JobMatch.matchedAt":
+		if e.ComplexityRoot.JobMatch.MatchedAt == nil {
+			break
+		}
+
+		return e.ComplexityRoot.JobMatch.MatchedAt(childComplexity), true
+	case "JobMatch.score":
+		if e.ComplexityRoot.JobMatch.Score == nil {
+			break
+		}
+
+		return e.ComplexityRoot.JobMatch.Score(childComplexity), true
+	case "JobMatch.userId":
+		if e.ComplexityRoot.JobMatch.UserID == nil {
+			break
+		}
+
+		return e.ComplexityRoot.JobMatch.UserID(childComplexity), true
 
 	case "Mutation.addUserSkill":
 		if e.ComplexityRoot.Mutation.AddUserSkill == nil {
@@ -475,6 +508,30 @@ type Job {
   title: String!
   description: String!
   requiredSkills: [Skill!]!
+
+  """
+  The matching worker's output for this job (Phase 2) — every user scored
+  above the configured overlap threshold against this job's required
+  skills, highest score first. Produced entirely from consumed Kafka
+  events (job.posted + jobs-service's own user_skill_snapshot projection,
+  itself fed by user.skills.updated) — no synchronous call to
+  users-service is involved. See docs/DECISIONS.md for the exact
+  threshold/scoring chosen. Unauthenticated, same reasoning as the rest of
+  jobs-service's read surface in this phase.
+  """
+  matches: [JobMatch!]!
+}
+
+# JobMatch is one row of jobs-service's jobs.job_matches, produced by the
+# in-process matching worker. userId is left opaque (same reasoning as
+# requiredSkills' skill IDs before resolution) — resolving it to a display
+# name would mean a call into users-service, which the gateway can add
+# later if a UI actually needs it; not built here since it's not what this
+# phase is demonstrating.
+type JobMatch {
+  userId: ID!
+  score: Float!
+  matchedAt: String!
 }
 
 # UserSkill pairs one of a user's claimed skills (resolved from
@@ -612,8 +669,22 @@ func (ec *executionContext) childFields_Job(ctx context.Context, field graphql.C
 		return ec.fieldContext_Job_description(ctx, field)
 	case "requiredSkills":
 		return ec.fieldContext_Job_requiredSkills(ctx, field)
+	case "matches":
+		return ec.fieldContext_Job_matches(ctx, field)
 	}
 	return nil, fmt.Errorf("no field named %q was found under type Job", field.Name)
+}
+
+func (ec *executionContext) childFields_JobMatch(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+	switch field.Name {
+	case "userId":
+		return ec.fieldContext_JobMatch_userId(ctx, field)
+	case "score":
+		return ec.fieldContext_JobMatch_score(ctx, field)
+	case "matchedAt":
+		return ec.fieldContext_JobMatch_matchedAt(ctx, field)
+	}
+	return nil, fmt.Errorf("no field named %q was found under type JobMatch", field.Name)
 }
 
 func (ec *executionContext) childFields_Profile(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
@@ -1169,6 +1240,107 @@ func (ec *executionContext) fieldContext_Job_requiredSkills(_ context.Context, f
 		},
 	}
 	return fc, nil
+}
+
+func (ec *executionContext) _Job_matches(ctx context.Context, field graphql.CollectedField, obj *model.Job) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Job_matches(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return ec.Resolvers.Job().Matches(ctx, obj)
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v []*model.JobMatch) graphql.Marshaler {
+			return ec.marshalNJobMatch2ᚕᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐJobMatchᚄ(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Job_matches(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Job",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.childFields_JobMatch(ctx, field)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _JobMatch_userId(ctx context.Context, field graphql.CollectedField, obj *model.JobMatch) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_JobMatch_userId(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.UserID, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNID2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_JobMatch_userId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("JobMatch", field, false, false, errors.New("field of type ID does not have child fields"))
+}
+
+func (ec *executionContext) _JobMatch_score(ctx context.Context, field graphql.CollectedField, obj *model.JobMatch) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_JobMatch_score(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Score, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v float64) graphql.Marshaler {
+			return ec.marshalNFloat2float64(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_JobMatch_score(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("JobMatch", field, false, false, errors.New("field of type Float does not have child fields"))
+}
+
+func (ec *executionContext) _JobMatch_matchedAt(ctx context.Context, field graphql.CollectedField, obj *model.JobMatch) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_JobMatch_matchedAt(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.MatchedAt, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_JobMatch_matchedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("JobMatch", field, false, false, errors.New("field of type String does not have child fields"))
 }
 
 func (ec *executionContext) _Mutation_register(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -3162,6 +3334,92 @@ func (ec *executionContext) _Job(ctx context.Context, sel ast.SelectionSet, obj 
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "matches":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Job_matches(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.IsDeferred() {
+				deferredFieldSet.AddField(field)
+				fieldIndex := len(deferredFieldSet.Values) - 1
+				deferredFieldSet.Concurrently(fieldIndex, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, deferredFieldSet)
+				})
+
+				for _, deferrable := range field.Deferrables {
+					view, ok := deferLabelToView[deferrable.Label]
+					if !ok {
+						view = deferredFieldSet.NewView()
+						deferLabelToView[deferrable.Label] = view
+					}
+					view.AddIndices(fieldIndex)
+				}
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.Deferred, int32(min(len(deferLabelToView), math.MaxInt32)))
+
+	ec.ProcessDeferredGroup(graphql.DeferredGroup{
+		Defers:   deferLabelToView,
+		Path:     graphql.GetPath(ctx),
+		FieldSet: deferredFieldSet,
+		Context:  ctx,
+	})
+
+	return out
+}
+
+var jobMatchImplementors = []string{"JobMatch"}
+
+func (ec *executionContext) _JobMatch(ctx context.Context, sel ast.SelectionSet, obj *model.JobMatch) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, jobMatchImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferredFieldSet := graphql.NewFieldSet(nil)
+	deferLabelToView := make(map[string]*graphql.FieldSetView)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("JobMatch")
+		case "userId":
+			out.Values[i] = ec._JobMatch_userId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "score":
+			out.Values[i] = ec._JobMatch_score(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "matchedAt":
+			out.Values[i] = ec._JobMatch_matchedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -4092,6 +4350,22 @@ func (ec *executionContext) marshalNBoolean2bool(ctx context.Context, sel ast.Se
 	return res
 }
 
+func (ec *executionContext) unmarshalNFloat2float64(ctx context.Context, v any) (float64, error) {
+	res, err := graphql.UnmarshalFloatContext(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNFloat2float64(ctx context.Context, sel ast.SelectionSet, v float64) graphql.Marshaler {
+	_ = sel
+	res := graphql.MarshalFloatContext(v)
+	if res == graphql.Null {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			graphql.AddErrorf(ctx, "the requested element is null which the schema does not allow")
+		}
+	}
+	return graphql.WrapContextMarshaler(ctx, res)
+}
+
 func (ec *executionContext) unmarshalNID2string(ctx context.Context, v any) (string, error) {
 	res, err := graphql.UnmarshalID(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -4165,6 +4439,32 @@ func (ec *executionContext) marshalNJob2ᚖgithubᚗcomᚋSiddsharma25ᚋskill�
 		return graphql.Null
 	}
 	return ec._Job(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNJobMatch2ᚕᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐJobMatchᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.JobMatch) graphql.Marshaler {
+	ret := graphql.MarshalSliceConcurrently(ctx, len(v), 0, false, func(ctx context.Context, i int) graphql.Marshaler {
+		fc := graphql.GetFieldContext(ctx)
+		fc.Result = &v[i]
+		return ec.marshalNJobMatch2ᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐJobMatch(ctx, sel, v[i])
+	})
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNJobMatch2ᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐJobMatch(ctx context.Context, sel ast.SelectionSet, v *model.JobMatch) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			graphql.AddErrorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._JobMatch(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalNProfile2githubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐProfile(ctx context.Context, sel ast.SelectionSet, v model.Profile) graphql.Marshaler {

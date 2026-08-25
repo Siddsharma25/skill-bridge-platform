@@ -15,7 +15,9 @@ Owns profile data (`users.profiles`) and the skills a user claims to have
   optional, so a partial update never clobbers the other field with an
   empty string).
 - `AddUserSkill(user_id, skill_id, proficiency)` — upserts one
-  `(user_id, skill_id) -> proficiency` row.
+  `(user_id, skill_id) -> proficiency` row, then (Phase 2) publishes the
+  user's **entire current skill list** to Kafka's `user.skills.updated` —
+  see "Publishing user.skills.updated" below.
 - `ListUserSkills(user_id)` — returns every `(skill_id, proficiency)` pair
   for a user. Deliberately does **not** resolve skill names/categories —
   that's skills-service's data, joined in by the gateway (a small,
@@ -39,6 +41,24 @@ time instead of waiting for a first read/write. The row shape
 (`users.profiles`) doesn't change between the two approaches — only *when*
 the row gets created does. See `docs/DECISIONS.md` for the same note in
 one place across services.
+
+## Publishing user.skills.updated (Phase 2)
+
+After a successful `AddUserSkill`, the handler fetches the user's
+now-current full skill list (the same query `ListUserSkills` uses) and
+publishes it — the **entire** list, not a one-skill delta — to Kafka's
+`user.skills.updated`, keyed by `user_id`. This is event-carried state
+transfer: jobs-service's snapshot consumer treats every event as
+authoritative and replaces its whole projection for that user, so
+publishing the full list (not a delta) is what makes reprocessing/
+out-of-order delivery safe on the consumer side — see `docs/DECISIONS.md`.
+
+Publishing is best-effort: a failure to fetch the updated list, or to
+publish it, is logged at Error level and swallowed — `AddUserSkill`'s
+gRPC response still reports success, since the primary write (the skill
+row was actually upserted into Postgres) already succeeded. See
+`internal/platform/kafka` and `docs/DECISIONS.md`'s "no transactional
+outbox" note.
 
 ## Why skill_id isn't validated against skills-service
 

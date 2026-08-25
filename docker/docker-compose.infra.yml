@@ -2,13 +2,23 @@
 # all at once (see docs/DECISIONS.md and the Phased Rollout in the
 # architecture plan):
 #
-#   - Redis:              here from Phase 1a onward (this file).
-#   - Kafka:               NOT here yet — Phase 2 is the first thing that
-#                          consumes it (users-service -> jobs-service event
-#                          flow). Adding it now would mean running a broker
-#                          nothing publishes to or consumes from yet.
+#   - Redis:              here from Phase 1a onward.
+#   - Kafka:               here from Phase 2 onward (this file) — the real
+#                          event flow: users-service publishes
+#                          `user.skills.updated`, skills-service publishes
+#                          `skill.updated`, jobs-service publishes
+#                          `job.posted`/`job.matched` and consumes all
+#                          three into its own projection/matching-worker/
+#                          cache-invalidation consumers. See
+#                          docs/DECISIONS.md's "Phase 2 implementation
+#                          notes" for why the official `apache/kafka` image
+#                          in KRaft mode (no Zookeeper) was chosen over a
+#                          Bitnami image — this project avoids Bitnami
+#                          entirely (see the existing Kafka-on-k8s warning
+#                          below), not just for Helm charts specifically.
 #   - RabbitMQ:            NOT here yet — Phase 3 (notification-service) is
-#                          its first consumer, for the same reason.
+#                          its first consumer, for the same reason Kafka
+#                          waited until Phase 2.
 #
 # Postgres is deliberately absent too: this project uses a single shared
 # Supabase instance (schema-per-service) rather than a local Postgres
@@ -31,5 +41,60 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Single-broker Kafka in KRaft mode (no Zookeeper) — the official
+  # apache/kafka image, not Bitnami's (Broadcom moved Bitnami's free
+  # versioned tags to the unmaintained bitnamilegacy repo in Aug 2025; see
+  # docs/DECISIONS.md's existing "not Bitnami" note for the k8s side of
+  # this project — staying consistent here even though that note was
+  # originally about Helm charts specifically). One broker, one partition
+  # per topic is plenty for local dev; see backend's Kafka topics
+  # (user.skills.updated, job.posted, job.matched, skill.updated) —
+  # created on first publish (topic auto-creation is left enabled, the
+  # broker's default) rather than pre-declared here, since this is a
+  # learning project, not a tuned production cluster.
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: sbp-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft: this one broker is also the controller (no Zookeeper).
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # One PLAINTEXT listener (plus the KRaft-only CONTROLLER one), bound
+      # on every interface inside the container (bare `:9092`, not
+      # `0.0.0.0:9092` — the broker's own advertised-listener validation
+      # rejects `0.0.0.0` as a "nonroutable meta-address," a gotcha hit
+      # during this phase's live verification) and advertised as
+      # `localhost:9092`. Backend services running on the host (`go run`,
+      # not containerized — see docker-compose.yml's Phase 4 note) and
+      # local tools run from a shell inside the container (`kafka-topics.sh`
+      # etc.) both reach the broker the same way: `localhost:9092`, which
+      # works from the host because the port is published 1:1 below, and
+      # from inside the container because that's the advertised address.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Single broker: replication/ISR factors of 1 everywhere, same
+      # "no broker HA at this scale" reasoning as Redis/RabbitMQ
+      # elsewhere in this project (see docs/DECISIONS.md's Scope Cuts).
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
   redis-data:
+  kafka-data:

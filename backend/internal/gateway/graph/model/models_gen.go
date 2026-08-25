@@ -7,6 +7,12 @@ type AuthPayload struct {
 	UserID      string `json:"userId"`
 }
 
+type JobMatch struct {
+	UserID    string  `json:"userId"`
+	Score     float64 `json:"score"`
+	MatchedAt string  `json:"matchedAt"`
+}
+
 type Mutation struct {
 }
 

@@ -16,6 +16,7 @@ import (
 
 	skillsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/skills/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/cache"
+	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 )
 
@@ -41,9 +42,10 @@ const (
 type Server struct {
 	skillsv1.UnimplementedSkillsServiceServer
 
-	db    *gorm.DB
-	cache cache.Cache
-	log   *zap.Logger
+	db        *gorm.DB
+	cache     cache.Cache
+	publisher kafkaplat.Publisher
+	log       *zap.Logger
 
 	// fetchAllSkills and insertSkill default to thin wrappers over s.db
 	// (queryAllSkillsFromDB / insertSkillIntoDB, below) but are swappable
@@ -60,11 +62,15 @@ type Server struct {
 	insertSkill    func(ctx context.Context, skill *Skill) error
 }
 
-// NewServer constructs a Server. log must not be nil; db and c may both be
-// nil (a nil c behaves like a disabled cache.Cache, same as
-// cache.NewFromEnv would return for an unset REDIS_URL).
-func NewServer(db *gorm.DB, c cache.Cache, log *zap.Logger) *Server {
-	s := &Server{db: db, cache: c, log: log}
+// NewServer constructs a Server. log must not be nil; db, c, and
+// publisher may all be nil (a nil c behaves like a disabled cache.Cache,
+// same as cache.NewFromEnv would return for an unset REDIS_URL; a nil
+// publisher simply means CreateSkill skips publishing skill.updated,
+// checked explicitly at the one call site below rather than requiring
+// every caller to pass a non-nil-but-disabled kafka.Producer the way
+// cache/db do — see docs/DECISIONS.md's Phase 2 notes).
+func NewServer(db *gorm.DB, c cache.Cache, publisher kafkaplat.Publisher, log *zap.Logger) *Server {
+	s := &Server{db: db, cache: c, publisher: publisher, log: log}
 	s.fetchAllSkills = s.queryAllSkillsFromDB
 	s.insertSkill = s.insertSkillIntoDB
 	return s
@@ -92,7 +98,13 @@ func (s *Server) insertSkillIntoDB(ctx context.Context, skill *Skill) error {
 // (see docs/DECISIONS.md), so anyone can add a skill to the taxonomy.
 // Successfully creating a skill DELs skills:all in the same write path
 // (write-through cache invalidation, per docs/DECISIONS.md) so ListSkills
-// never serves a stale taxonomy after this returns.
+// never serves a stale taxonomy after this returns. It also publishes
+// skill.updated to Kafka (Phase 2) — the write-through DEL is for
+// skills-service's own cache, the Kafka publish is for jobs-service's
+// cross-service cache invalidation of its own jobs:all entry (see
+// internal/jobs's skill.updated consumer and docs/DECISIONS.md). Both
+// happen; they invalidate two different services' caches, not the same
+// one twice.
 func (s *Server) CreateSkill(ctx context.Context, req *skillsv1.CreateSkillRequest) (*skillsv1.CreateSkillResponse, error) {
 	log := logger.FromContext(ctx, s.log)
 
@@ -120,6 +132,15 @@ func (s *Server) CreateSkill(ctx context.Context, req *skillsv1.CreateSkillReque
 
 	if s.cache != nil {
 		s.cache.Del(ctx, skillsAllCacheKey)
+	}
+
+	if s.publisher != nil {
+		payload, err := json.Marshal(kafkaplat.SkillUpdated{SkillID: skill.ID})
+		if err != nil {
+			log.Error("failed to marshal skill.updated event; not published", zap.Error(err), zap.String("skill_id", skill.ID))
+		} else {
+			s.publisher.Publish(ctx, kafkaplat.TopicSkillUpdated, skill.ID, payload)
+		}
 	}
 
 	log.Info("created skill", zap.String("skill_id", skill.ID), zap.String("name", skill.Name))

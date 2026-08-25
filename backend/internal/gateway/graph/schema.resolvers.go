@@ -29,6 +29,26 @@ func (r *jobResolver) RequiredSkills(ctx context.Context, obj *model.Job) ([]*mo
 	return r.resolveSkillsViaLoader(ctx, obj.RequiredSkillIDs)
 }
 
+// Matches is the resolver for the Job.matches field (Phase 2). Thin
+// pass-through to jobs-service's ListJobMatches — the matching worker's
+// output, produced entirely by consuming job.posted and jobs-service's
+// own user_skill_snapshot projection (see docs/DECISIONS.md). Not batched
+// via a dataloader like requiredSkills: unlike skill_id resolution (which
+// every Job in a list response needs, against a service with no
+// single-ID lookup), matches are already a single targeted per-job gRPC
+// call, so batching wouldn't remove any redundant work here.
+func (r *jobResolver) Matches(ctx context.Context, obj *model.Job) ([]*model.JobMatch, error) {
+	resp, err := r.JobsClient.ListJobMatches(ctx, &jobsv1.ListJobMatchesRequest{JobId: obj.ID})
+	if err != nil {
+		return nil, translateGRPCError(err)
+	}
+	out := make([]*model.JobMatch, 0, len(resp.GetMatches()))
+	for _, m := range resp.GetMatches() {
+		out = append(out, &model.JobMatch{UserID: m.GetUserId(), Score: m.GetScore(), MatchedAt: m.GetMatchedAt()})
+	}
+	return out, nil
+}
+
 // Register is the resolver for the register field. It's a thin pass-through
 // to auth-service over gRPC — api-gateway never touches a password hash or
 // a database itself, per the gateway-is-stateless design in

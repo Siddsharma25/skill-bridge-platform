@@ -61,9 +61,10 @@ migrate-up:
 	goose -dir migrations/skills -table skills.goose_db_version postgres "$$DATABASE_URL" up
 	goose -dir migrations/jobs -table jobs.goose_db_version postgres "$$DATABASE_URL" up
 
-## up/down/nuke: local infra lifecycle (Redis for now; Kafka/RabbitMQ land
-## in later phases). nuke also drops volumes — use it when you want a truly
-## clean slate, e.g. after changing a migration you already applied.
+## up/down/nuke: local infra lifecycle (Redis + Kafka as of Phase 2;
+## RabbitMQ lands in Phase 3). nuke also drops volumes — use it when you
+## want a truly clean slate, e.g. after changing a migration you already
+## applied.
 up:
 	docker compose -f ../docker/docker-compose.infra.yml up -d
 

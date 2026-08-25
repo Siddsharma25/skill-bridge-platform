@@ -20,6 +20,7 @@ import (
 	usersv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/users/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/db"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/health"
+	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
@@ -56,7 +57,13 @@ func main() {
 		log.Info("connected to database")
 	}
 
-	usersServer := users.NewServer(gormDB, log)
+	// Kafka producer (Phase 2): degrades gracefully, same pattern as the
+	// DB connection above — a missing/unreachable KAFKA_BROKERS just
+	// disables event publishing for this instance rather than failing to
+	// start. See internal/platform/kafka and docs/DECISIONS.md.
+	kafkaProducer := kafkaplat.NewProducerFromEnv(os.Getenv, log)
+
+	usersServer := users.NewServer(gormDB, kafkaProducer, log)
 
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),
@@ -109,6 +116,10 @@ func main() {
 					return err
 				}
 				return sqlDB.Close()
+			},
+			func(_ context.Context) error {
+				kafkaProducer.Close()
+				return nil
 			},
 		},
 	})

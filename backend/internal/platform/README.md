@@ -61,6 +61,24 @@ full trade-off. There's no live Supabase project at the time this was
 written, so `db`'s tests only verify config-wiring logic (defaults, DSN
 plumbing) — not an actual round trip.
 
+## kafka
+
+Phase 2's thin `github.com/twmb/franz-go`-backed producer/consumer pair —
+see `docs/DECISIONS.md`'s "Phase 2 implementation notes" for why franz-go
+over the alternatives. `Producer` degrades gracefully exactly like
+`cache.Client`: an unset/unreachable `KAFKA_BROKERS` disables publishing
+rather than failing the service to start, and every publish failure logs
+at **Error** level (not Warn) and is swallowed — a dropped domain event is
+real data loss, distinct from a Redis cache miss, but the triggering RPC's
+primary write (e.g. the skill was actually saved to Postgres) already
+succeeded, so the event stays best-effort per the documented "no
+transactional outbox" gap. `Consumer` wraps a named consumer group and
+integrates with `internal/platform/shutdown`: `Run(ctx, handler)` polls
+until `ctx` is cancelled from a shutdown `CleanupFunc`, then `Close()`
+sends the group a clean `LeaveGroup` — this is specifically what prevents
+the zombie-consumer-group-member problem `shutdown`'s own doc comment
+warns about, now that a Kafka consumer actually exists to leave one.
+
 ## jwks
 
 Two sides of the same coin. On auth-service: generate (or load from env)

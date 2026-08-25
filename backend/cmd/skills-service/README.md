@@ -8,7 +8,13 @@ required skills) reference by ID rather than storing their own copy.
 
 - `CreateSkill(name, category)` — inserts a new skill. Unauthenticated in
   Phase 1b (see docs/DECISIONS.md — no role system exists yet, so this is
-  a known, accepted gap, not a bug).
+  a known, accepted gap, not a bug). Also, as of Phase 2, publishes
+  `skill.updated` (skill_id) to Kafka in addition to its existing
+  `skills:all` Redis `DEL` — the `DEL` is write-through invalidation of
+  skills-service's own cache, the Kafka publish is what lets jobs-service
+  evict its own cache cross-service (see `internal/jobs`'s
+  `skill.updated` consumer and `docs/DECISIONS.md`). Both happen; they
+  invalidate two different services' caches, not the same one twice.
 - `ListSkills()` — returns every skill, ordered by name. No pagination
   yet; not needed at this data scale.
 - Serves `grpc.health.v1.Health` plus HTTP `/healthz`/`/readyz`, same as

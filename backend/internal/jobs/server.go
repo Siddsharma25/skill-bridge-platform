@@ -15,6 +15,7 @@ import (
 
 	jobsv1 "github.com/Siddsharma25/skill-bridge-platform/backend/gen/jobs/v1"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/cache"
+	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 )
 
@@ -39,9 +40,10 @@ func jobCacheKey(id string) string { return "jobs:" + id }
 type Server struct {
 	jobsv1.UnimplementedJobsServiceServer
 
-	db    *gorm.DB
-	cache cache.Cache
-	log   *zap.Logger
+	db        *gorm.DB
+	cache     cache.Cache
+	publisher kafkaplat.Publisher
+	log       *zap.Logger
 
 	// fetchAllJobs, fetchJobByID, and insertJob default to thin wrappers
 	// over s.db but are swappable fields, same seam-for-testability
@@ -50,6 +52,10 @@ type Server struct {
 	fetchAllJobs func(ctx context.Context) ([]jobWithSkills, error)
 	fetchJobByID func(ctx context.Context, id string) (*jobWithSkills, error)
 	insertJob    func(ctx context.Context, job *Job, skillIDs []string) error
+	// fetchJobMatches defaults to a thin wrapper over s.db (see
+	// queryJobMatchesFromDB below), same seam pattern, for
+	// ListJobMatches.
+	fetchJobMatches func(ctx context.Context, jobID string) ([]JobMatch, error)
 }
 
 // jobWithSkills bundles a Job with its resolved required-skill IDs — the
@@ -59,14 +65,29 @@ type jobWithSkills struct {
 	Skills []string
 }
 
-// NewServer constructs a Server. log must not be nil; db and c may both be
-// nil.
-func NewServer(db *gorm.DB, c cache.Cache, log *zap.Logger) *Server {
-	s := &Server{db: db, cache: c, log: log}
+// NewServer constructs a Server. log must not be nil; db, c, and
+// publisher may all be nil (a nil publisher simply means CreateJob skips
+// publishing job.posted — checked explicitly at that call site, same
+// pattern as skills-service/users-service; see docs/DECISIONS.md's Phase
+// 2 notes).
+func NewServer(db *gorm.DB, c cache.Cache, publisher kafkaplat.Publisher, log *zap.Logger) *Server {
+	s := &Server{db: db, cache: c, publisher: publisher, log: log}
 	s.fetchAllJobs = s.queryAllJobsFromDB
 	s.fetchJobByID = s.queryJobByIDFromDB
 	s.insertJob = s.insertJobIntoDB
+	s.fetchJobMatches = s.queryJobMatchesFromDB
 	return s
+}
+
+func (s *Server) queryJobMatchesFromDB(ctx context.Context, jobID string) ([]JobMatch, error) {
+	if s.db == nil {
+		return nil, status.Error(codes.Unavailable, "database is not configured on this instance")
+	}
+	var rows []JobMatch
+	if err := s.db.WithContext(ctx).Where("job_id = ?", jobID).Order("score DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (s *Server) queryAllJobsFromDB(ctx context.Context) ([]jobWithSkills, error) {
@@ -132,7 +153,11 @@ func (s *Server) insertJobIntoDB(ctx context.Context, job *Job, skillIDs []strin
 // a job DELs jobs:all (write-through, per docs/DECISIONS.md) so ListJobs
 // never serves a stale list missing the new posting; there's no
 // jobs:<id> to invalidate for a brand-new ID, so GetJob relies on
-// jobsCacheTTL alone.
+// jobsCacheTTL alone. It also publishes job.posted (Phase 2) — the
+// trigger for the in-process matching worker (see matcher.go) to score
+// every candidate in jobs.user_skill_snapshot against this job's required
+// skills, entirely from consumed Kafka events, no synchronous call back
+// into this RPC.
 func (s *Server) CreateJob(ctx context.Context, req *jobsv1.CreateJobRequest) (*jobsv1.CreateJobResponse, error) {
 	log := logger.FromContext(ctx, s.log)
 
@@ -160,8 +185,55 @@ func (s *Server) CreateJob(ctx context.Context, req *jobsv1.CreateJobRequest) (*
 		s.cache.Del(ctx, jobsAllCacheKey)
 	}
 
+	if s.publisher != nil {
+		payload, err := json.Marshal(kafkaplat.JobPosted{
+			JobID:            job.ID,
+			RequiredSkillIDs: skillIDs,
+			PostedAt:         time.Now().UTC(),
+		})
+		if err != nil {
+			log.Error("failed to marshal job.posted event; not published", zap.Error(err), zap.String("job_id", job.ID))
+		} else {
+			s.publisher.Publish(ctx, kafkaplat.TopicJobPosted, job.ID, payload)
+		}
+	}
+
 	log.Info("created job", zap.String("job_id", job.ID), zap.String("title", job.Title))
 	return &jobsv1.CreateJobResponse{Job: toProto(&job, skillIDs)}, nil
+}
+
+// ListJobMatches returns every jobs.job_matches row for job_id, highest
+// score first — the matching worker's output (see matcher.go), produced
+// entirely by consuming job.posted and the user_skill_snapshot
+// projection, never a synchronous call back into this RPC's own
+// CreateJob. Added so the Phase 2 checkpoint can be demonstrated through
+// the gateway's GraphQL API — see docs/DECISIONS.md.
+func (s *Server) ListJobMatches(ctx context.Context, req *jobsv1.ListJobMatchesRequest) (*jobsv1.ListJobMatchesResponse, error) {
+	log := logger.FromContext(ctx, s.log)
+
+	jobID := strings.TrimSpace(req.GetJobId())
+	if jobID == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id is required")
+	}
+
+	rows, err := s.fetchJobMatches(ctx, jobID)
+	if err != nil {
+		if _, isStatus := status.FromError(err); isStatus {
+			return nil, err
+		}
+		log.Error("failed to list job matches", zap.Error(err), zap.String("job_id", jobID))
+		return nil, status.Error(codes.Internal, "failed to list job matches")
+	}
+
+	out := make([]*jobsv1.JobMatch, 0, len(rows))
+	for i := range rows {
+		out = append(out, &jobsv1.JobMatch{
+			UserId:    rows[i].UserID,
+			Score:     rows[i].Score,
+			MatchedAt: rows[i].MatchedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return &jobsv1.ListJobMatchesResponse{Matches: out}, nil
 }
 
 // ListJobs returns every job posting, most-recently-created first, with

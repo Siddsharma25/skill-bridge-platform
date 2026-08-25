@@ -1,13 +1,12 @@
 // Package jobs.v1 defines the gRPC contract for jobs-service, which owns
-// job postings (jobs.jobs) and the skills each posting requires
-// (jobs.job_required_skills).
-//
-// jobs.job_matches and jobs.user_skill_snapshot (the event-carried-state-
-// transfer projection that lets the matching worker score candidates
-// without querying users-service's schema directly — see
-// docs/DECISIONS.md) are Phase 2 additions once Kafka exists. Neither the
-// matching worker, the snapshot table, nor their migrations are part of
-// this contract yet.
+// job postings (jobs.jobs), the skills each posting requires
+// (jobs.job_required_skills), and — as of Phase 2 — the matches the
+// in-process matching worker produces (jobs.job_matches) plus its own
+// event-carried-state-transfer projection of every user's skills
+// (jobs.user_skill_snapshot, not exposed over gRPC — it's an internal
+// read-model, fed by consuming users-service's user.skills.updated Kafka
+// event, never queried directly by a client; see docs/DECISIONS.md's "why
+// jobs-service doesn't just query users-service's database").
 syntax = "proto3";
 
 package jobs.v1;
@@ -32,6 +31,16 @@ service JobsService {
 
   // GetJob returns a single job posting by ID, or NotFound.
   rpc GetJob(GetJobRequest) returns (GetJobResponse);
+
+  // ListJobMatches returns every jobs.job_matches row for one job,
+  // highest score first — the in-process matching worker's output (see
+  // docs/DECISIONS.md's Phase 2 notes), produced entirely from consumed
+  // Kafka events (job.posted + the user_skill_snapshot projection fed by
+  // user.skills.updated), never a synchronous call to users-service.
+  // Added so the Phase 2 checkpoint ("creating a job asynchronously
+  // produces queryable match rows") can be demonstrated through the
+  // gateway's actual GraphQL API (Job.matches), not just direct SQL.
+  rpc ListJobMatches(ListJobMatchesRequest) returns (ListJobMatchesResponse);
 }
 
 message Job {
@@ -63,4 +72,24 @@ message GetJobRequest {
 
 message GetJobResponse {
   Job job = 1;
+}
+
+// JobMatch is one row of jobs.job_matches — a user the matching worker
+// scored against a job's required skills, above the configured threshold
+// (see docs/DECISIONS.md for the exact threshold/algorithm chosen).
+// user_id is opaque here too, same reasoning as skill_id elsewhere in
+// this contract — resolving it to a display name is users-service's data
+// via the gateway, not jobs-service's.
+message JobMatch {
+  string user_id = 1;
+  double score = 2;
+  string matched_at = 3;
+}
+
+message ListJobMatchesRequest {
+  string job_id = 1;
+}
+
+message ListJobMatchesResponse {
+  repeated JobMatch matches = 1;
 }

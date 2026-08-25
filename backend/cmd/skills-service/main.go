@@ -21,6 +21,7 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/cache"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/db"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/health"
+	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
@@ -64,7 +65,13 @@ func main() {
 	// internal/platform/cache and docs/DECISIONS.md.
 	redisCache := cache.NewFromEnv(os.Getenv, log)
 
-	skillsServer := skills.NewServer(gormDB, redisCache, log)
+	// Kafka producer (Phase 2): degrades gracefully, same pattern as the
+	// DB/Redis connections above — a missing/unreachable KAFKA_BROKERS
+	// just disables event publishing for this instance rather than
+	// failing to start. See internal/platform/kafka and docs/DECISIONS.md.
+	kafkaProducer := kafkaplat.NewProducerFromEnv(os.Getenv, log)
+
+	skillsServer := skills.NewServer(gormDB, redisCache, kafkaProducer, log)
 
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),
@@ -123,6 +130,10 @@ func main() {
 			},
 			func(_ context.Context) error {
 				return redisCache.Close()
+			},
+			func(_ context.Context) error {
+				kafkaProducer.Close()
+				return nil
 			},
 		},
 	})
