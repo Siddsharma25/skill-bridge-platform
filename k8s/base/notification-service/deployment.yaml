@@ -1,0 +1,53 @@
+# notification-service (NestJS): higher resource allowance than the Go
+# services — a Node runtime's baseline footprint (V8 heap, module graph)
+# is meaningfully larger than a statically-linked Go binary's, even doing
+# less work. Still well within the "small service" band the plan calls
+# for, just not identical to the Go services' numbers.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: skill-bridge
+  labels:
+    app: notification-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+        - name: notification-service
+          image: skill-bridge/notification-service:kind
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8085
+          envFrom:
+            - configMapRef:
+                name: notification-service-config
+            - secretRef:
+                name: notification-service-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8085
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8085
+            initialDelaySeconds: 5
+            periodSeconds: 10

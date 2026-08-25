@@ -107,11 +107,45 @@ lint:
 	golangci-lint run ./...
 	PATH="$(PATH)" buf lint
 
-## kind-up / kind-load: local Kubernetes practice cluster. Real
-## implementation lands in Phase 5 (see docs/DECISIONS.md) — stubbed here
-## so the target exists and fails loudly rather than silently no-op'ing.
+## kind-up: create the local Kubernetes practice cluster and install both
+## operators (Strimzi for Kafka, the official RabbitMQ Cluster Operator),
+## waiting for each to be ready. Does NOT apply the Kafka/RabbitMQ custom
+## resources, the throwaway Postgres, or the app manifests — see
+## docs/DECISIONS.md's Phase 5 implementation notes for the full apply
+## order (operators must be Ready before their CRDs' custom resources can
+## be created) and for the exact commands this wraps.
 kind-up:
-	@echo "not yet implemented, see Phase 5"
+	@command -v kind >/dev/null || (echo "kind not found" && exit 1)
+	kind create cluster --name skill-bridge --config ../k8s/kind-cluster-config.yaml
+	kubectl create namespace kafka --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f 'https://strimzi.io/install/latest?namespace=kafka' -n kafka
+	kubectl apply -f "https://github.com/rabbitmq/cluster-operator/releases/latest/download/cluster-operator.yml"
+	@echo "==> waiting for Strimzi cluster operator to be ready"
+	kubectl wait deployment/strimzi-cluster-operator -n kafka --for=condition=Available --timeout=180s
+	@echo "==> waiting for RabbitMQ cluster operator to be ready"
+	kubectl wait deployment/rabbitmq-cluster-operator -n rabbitmq-system --for=condition=Available --timeout=180s
+	@echo "==> operators ready. Next: apply k8s/strimzi/kafka-cluster.yaml and"
+	@echo "    k8s/rabbitmq/rabbitmq-cluster.yaml (with a real password substituted"
+	@echo "    for RabbitMQ), the throwaway verification Postgres, then"
+	@echo "    'kubectl apply -k ../k8s/overlays/kind' — see docs/DECISIONS.md."
 
+## kind-load: build every service's image and load it into the kind
+## cluster's node (kind's nodes are containers with their own isolated
+## image store — a plain `docker build` alone is invisible to them; see
+## https://kind.sigs.k8s.io/docs/user/quick-start/#loading-an-image-into-your-cluster).
+## Reuses the existing Dockerfile.<service> files and
+## notification-service/Dockerfile as-is.
 kind-load:
-	@echo "not yet implemented, see Phase 5"
+	@command -v kind >/dev/null || (echo "kind not found" && exit 1)
+	docker build -t skill-bridge/auth-service:kind -f Dockerfile.auth-service .
+	docker build -t skill-bridge/users-service:kind -f Dockerfile.users-service .
+	docker build -t skill-bridge/skills-service:kind -f Dockerfile.skills-service .
+	docker build -t skill-bridge/jobs-service:kind -f Dockerfile.jobs-service .
+	docker build -t skill-bridge/api-gateway:kind -f Dockerfile.api-gateway .
+	docker build -t skill-bridge/notification-service:kind notification-service
+	kind load docker-image skill-bridge/auth-service:kind --name skill-bridge
+	kind load docker-image skill-bridge/users-service:kind --name skill-bridge
+	kind load docker-image skill-bridge/skills-service:kind --name skill-bridge
+	kind load docker-image skill-bridge/jobs-service:kind --name skill-bridge
+	kind load docker-image skill-bridge/api-gateway:kind --name skill-bridge
+	kind load docker-image skill-bridge/notification-service:kind --name skill-bridge

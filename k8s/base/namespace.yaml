@@ -1,0 +1,9 @@
+# App namespace for all 6 skill-bridge-platform services + Redis. Kept
+# separate from Strimzi's `kafka` namespace and the RabbitMQ Cluster
+# Operator's `rabbitmq-system`/`rabbitmq` namespaces (see
+# k8s/strimzi/kafka-cluster.yaml and k8s/rabbitmq/rabbitmq-cluster.yaml),
+# mirroring how each operator owns its own namespace in a real cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: skill-bridge

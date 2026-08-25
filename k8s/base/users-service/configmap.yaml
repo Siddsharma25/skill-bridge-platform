@@ -1,0 +1,13 @@
+# users-service has no Redis usage (see backend/cmd/users-service/main.go
+# — no internal/platform/cache import), unlike skills-service/jobs-service
+# /api-gateway, so no REDIS_URL here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: users-service-config
+  namespace: skill-bridge
+data:
+  ENV: "production"
+  PORT: "9003"
+  HTTP_PORT: "8083"
+  KAFKA_BROKERS: "skill-bridge-kafka-bootstrap.kafka.svc.cluster.local:9092"

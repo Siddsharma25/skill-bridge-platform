@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-config
+  namespace: skill-bridge
+data:
+  ENV: "production"
+  PORT: "8080"
+  REDIS_URL: "redis://redis.skill-bridge.svc.cluster.local:6379/0"
+  AUTH_SERVICE_ADDR: "auth-service.skill-bridge.svc.cluster.local:9001"
+  AUTH_SERVICE_JWKS_URL: "http://auth-service.skill-bridge.svc.cluster.local:8081/.well-known/jwks.json"
+  SKILLS_SERVICE_ADDR: "skills-service.skill-bridge.svc.cluster.local:9002"
+  USERS_SERVICE_ADDR: "users-service.skill-bridge.svc.cluster.local:9003"
+  JOBS_SERVICE_ADDR: "jobs-service.skill-bridge.svc.cluster.local:9004"

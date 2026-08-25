@@ -1,0 +1,105 @@
+# Kafka via the Strimzi operator (not Bitnami, not a Helm chart — see
+# docs/DECISIONS.md's "Kafka/RabbitMQ/Redis on Kubernetes: not Bitnami
+# charts"). The operator itself is installed separately via Strimzi's
+# official installation YAML, NOT from this file:
+#
+#   kubectl create namespace kafka
+#   kubectl apply -f 'https://strimzi.io/install/latest?namespace=kafka' -n kafka
+#
+# This file is the actual Kafka cluster definition, applied once the
+# operator's CRDs exist and its pod is Ready. It runs in KRaft mode (no
+# ZooKeeper) with a single-node KafkaNodePool combining the broker and
+# controller roles — the smallest topology Strimzi supports, appropriate
+# for a single kind node with a tight memory budget (see
+# kind-cluster-config.yaml's comment on the ~7.65 GiB Docker Desktop VM
+# discovered live in this phase).
+#
+# Deliberately no `entityOperator` block: Strimzi's Topic Operator and
+# User Operator are each an extra sidecar container (~256Mi request
+# apiece) that exist to reconcile KafkaTopic/KafkaUser custom resources.
+# This project doesn't use either — topics are auto-created by the first
+# producer/consumer that touches them, exactly like
+# docker/docker-compose.infra.yml's Kafka container
+# (KAFKA_AUTO_CREATE_TOPICS_ENABLE=true) — so paying for two reconciler
+# sidecars here would be pure overhead with nothing to reconcile.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: skill-bridge-pool
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: skill-bridge
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 5Gi
+        deleteClaim: true
+  resources:
+    requests:
+      memory: 768Mi
+      cpu: 250m
+    limits:
+      memory: 1200Mi
+      cpu: "1"
+  jvmOptions:
+    # Modest fixed heap so the JVM doesn't try to size itself off the
+    # node's total memory (which, on a shared single kind node, looks
+    # much bigger than what this pod is actually allowed) — see the
+    # memory-budget comment above. Leaves headroom under the 1200Mi limit
+    # for off-heap/page-cache use, which Kafka relies on.
+    "-Xms": "384m"
+    "-Xmx": "384m"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: skill-bridge
+  namespace: kafka
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+spec:
+  kafka:
+    # 3.9.0 (docker-compose.infra.yml's version, see that file) is NOT
+    # supported by this phase's Strimzi release (operator image
+    # quay.io/strimzi/operator:1.2.0, installed live from
+    # https://strimzi.io/install/latest?namespace=kafka at the time this
+    # phase was built) — applying the CR with 3.9.0 fails fast with a
+    # clear `UnsupportedKafkaVersionException` status condition listing
+    # [4.2.0, 4.2.1, 4.3.0, 4.3.1] as the only supported versions.
+    # Strimzi's "latest" install and docker-compose's pinned Kafka image
+    # having drifted apart like this is exactly the kind of
+    # environment-specific gotcha this project's docs call out per phase
+    # (see docs/DECISIONS.md's Phase 5 implementation notes) — the two
+    # don't need to match (docs/DECISIONS.md's Directory Structure note:
+    # "docker-compose and k8s manifests don't need to stay in perfect
+    # sync"), so this just takes the newest version this Strimzi build
+    # actually supports rather than trying to pin backward.
+    version: 4.3.1
+    metadataVersion: 4.3-IV0
+    # One broker => replication/ISR factors of 1 everywhere, same "no
+    # broker HA at this scale" reasoning as every other broker in this
+    # project (see docs/DECISIONS.md's Scope Cuts and
+    # docker-compose.infra.yml's Kafka config).
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      auto.create.topics.enable: "true"
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+  # No entityOperator block at all (see comment above the KafkaNodePool):
+  # omitting it entirely, not just leaving it empty, is what actually
+  # skips deploying the entity-operator pod.

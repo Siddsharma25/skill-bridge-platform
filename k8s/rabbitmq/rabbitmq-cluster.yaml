@@ -1,0 +1,109 @@
+# RabbitMQ via the official RabbitMQ Cluster Operator (not Bitnami, not a
+# Helm chart — see docs/DECISIONS.md's "Kafka/RabbitMQ/Redis on
+# Kubernetes: not Bitnami charts"). The operator itself is installed
+# separately via its official manifest, NOT from this file:
+#
+#   kubectl apply -f "https://github.com/rabbitmq/cluster-operator/releases/latest/download/cluster-operator.yml"
+#
+# That manifest creates its own `rabbitmq-system` namespace and deploys
+# the operator there with cluster-wide RBAC to watch RabbitmqCluster
+# custom resources in any namespace. This file is the actual cluster
+# definition, applied once the operator's CRDs exist and its pod is
+# Ready — it runs in its own `rabbitmq` namespace (created below),
+# separate from `rabbitmq-system` (the operator's home) and from
+# `skill-bridge` (the app namespace), mirroring Strimzi's operator-vs-CR
+# namespace split.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rabbitmq
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: skill-bridge
+  namespace: rabbitmq
+spec:
+  replicas: 1
+  # Explicit image: this operator version's admission webhook (which
+  # would otherwise default this field, among others) was removed as part
+  # of this phase's cert-manager workaround (see docs/DECISIONS.md's
+  # Phase 5 implementation notes) — without it, an unset image field
+  # reaches the generated StatefulSet as a required-but-empty value and
+  # the StatefulSet is rejected outright.
+  #
+  # Major version 4.1, not 3.13 (docker-compose.infra.yml's version) —
+  # see docs/DECISIONS.md's Phase 5 implementation notes for the full
+  # story: the operator's default startupProbe (see `override` below)
+  # turned out to be broken regardless of RabbitMQ version, so this
+  # version choice ended up mattering less than expected, but 4.1 is kept
+  # as the more current, actively-supported line.
+  image: rabbitmq:4.1-management
+  resources:
+    # Memory request MUST equal the limit for RabbitMQ pods — the
+    # operator surfaces this as a NoWarnings condition
+    # (MemoryRequestAndLimitDifferent) and Erlang's VM itself wants to
+    # know its true ceiling up front for its own internal memory-alarm
+    # watermark calculation, unlike a Go/JVM process that can tolerate
+    # request < limit. Discovered live via `kubectl get rabbitmqcluster
+    # -o jsonpath='{.status.conditions}'` — see docs/DECISIONS.md's
+    # Phase 5 implementation notes.
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  persistence:
+    storage: 2Gi
+  rabbitmq:
+    # Pin a known default_user/default_pass in rabbitmq.conf rather than
+    # relying on the operator's auto-generated per-instance credentials
+    # (a random username/password written to a Secret named
+    # `skill-bridge-default-user`). Six app Deployments each need
+    # RABBITMQ_URL as a single connection-string env var, and Kubernetes
+    # env vars can't be composed from multiple secretKeyRefs (no string
+    # concatenation) — the app's distroless images also have no shell to
+    # do that composition in an entrypoint script. Pinning known
+    # credentials here and mirroring them into each service's own
+    # Secret (see each k8s/base/<service>/secret.example.yaml) sidesteps
+    # that plumbing problem entirely, at the cost of not using the
+    # operator's generated-secret feature. Fine for a throwaway local
+    # sandbox; a real deployment would want the generated-secret +
+    # projected-volume approach instead. Documented in
+    # docs/DECISIONS.md's Phase 5 implementation notes as the concrete
+    # k8s-networking-shaped gotcha this phase surfaced.
+    additionalConfig: |
+      default_user = appuser
+      default_pass = CHANGE_ME_RABBITMQ_PASSWORD
+  # Replaces the operator's default startupProbe, which GETs
+  # /api/health/checks/reached-target-cluster-size on the management
+  # HTTP API. That endpoint 404s on every RabbitMQ version tried live in
+  # this phase (3.13, 4.0, 4.1 management images — all otherwise fully up
+  # and serving, confirmed via `kubectl logs`/`kubectl exec ...
+  # rabbitmq-diagnostics --help`, which doesn't list any check by that
+  # name either) against this operator build
+  # (ghcr.io/rabbitmq/cluster-operator:2.22.5) — a genuine
+  # operator/RabbitMQ version-drift gotcha, not a slow-boot symptom, and
+  # exactly the kind of thing this project's docs flag per phase (see
+  # docs/DECISIONS.md's Phase 5 implementation notes, and Phase 4's Kafka
+  # advertised-listeners gotcha for the pattern this rhymes with). Swaps
+  # in `rabbitmq-diagnostics check_running`, a version-stable exec check
+  # that's the documented modern replacement for the deprecated
+  # HTTP-based `node_health_check`, and is correct for a single-node,
+  # non-HA cluster where "is RabbitMQ itself up" is all readiness needs
+  # to mean.
+  override:
+    statefulSet:
+      spec:
+        template:
+          spec:
+            containers:
+              - name: rabbitmq
+                startupProbe:
+                  exec:
+                    command: ["rabbitmq-diagnostics", "check_running"]
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 10
+                  failureThreshold: 30

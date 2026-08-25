@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: users-service
+  namespace: skill-bridge
+spec:
+  selector:
+    app: users-service
+  ports:
+    - name: grpc
+      port: 9003
+      targetPort: 9003
+    - name: http
+      port: 8083
+      targetPort: 8083

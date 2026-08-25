@@ -1,0 +1,16 @@
+# Non-sensitive env vars only — see secret.example.yaml for
+# DATABASE_URL/JWT_PRIVATE_KEY_PEM/RABBITMQ_URL, which are credentials
+# and don't belong in a ConfigMap. auth-service doesn't use Kafka (no
+# producer/consumer in cmd/auth-service/main.go), so no KAFKA_BROKERS
+# here — see backend/.env.example for the full per-service env map this
+# mirrors.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-service-config
+  namespace: skill-bridge
+data:
+  ENV: "production"
+  PORT: "9001"
+  HTTP_PORT: "8081"
+  JWT_ISSUER: "skill-bridge-platform/auth-service"

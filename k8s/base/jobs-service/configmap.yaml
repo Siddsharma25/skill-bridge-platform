@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jobs-service-config
+  namespace: skill-bridge
+data:
+  ENV: "production"
+  PORT: "9004"
+  HTTP_PORT: "8084"
+  REDIS_URL: "redis://redis.skill-bridge.svc.cluster.local:6379/0"
+  KAFKA_BROKERS: "skill-bridge-kafka-bootstrap.kafka.svc.cluster.local:9092"

@@ -1,0 +1,15 @@
+# The "kind" environment overlay. Base manifests already use image tags
+# (`:kind`) and imagePullPolicy: Never suited to a kind cluster with
+# locally-built-and-loaded images, so today this overlay is thin — it
+# exists as the extension point the plan asks for (a `docker-desktop` or
+# `minikube` overlay later would patch image tags / pull policy /
+# resource sizing here without touching base/) rather than because kind
+# needs patches on top of base right now.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+commonLabels:
+  environment: kind

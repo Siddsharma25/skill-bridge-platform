@@ -1,0 +1,46 @@
+# Plain hand-written Redis Deployment — no chart, no operator. This is
+# the explicit design decision recorded in docs/DECISIONS.md ("not
+# Bitnami charts"): Redis is simple enough (one process, no clustering at
+# this scale) that a 15-line Deployment is genuinely the right amount of
+# tooling, unlike Kafka/RabbitMQ which get real operators because there's
+# real operational complexity (KRaft quorum, Erlang clustering) worth
+# practicing against.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: skill-bridge
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 150m
+              memory: 128Mi
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10

@@ -1,0 +1,34 @@
+# Base resources for the app namespace: the namespace itself, Redis, and
+# all 6 app services' ConfigMap+Deployment+Service. Deliberately excludes
+# every secret.example.yaml (illustrative only, see each one's comment)
+# and everything Strimzi/RabbitMQ-operator-related, which lives outside
+# `base/` under k8s/strimzi/ and k8s/rabbitmq/ since those are
+# operator-managed custom resources applied in their own namespaces, not
+# plain Deployments this kustomization owns. The throwaway verification
+# Postgres is intentionally not referenced anywhere in this repo at all
+# — see docs/DECISIONS.md's Phase 5 implementation notes.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - redis/deployment.yaml
+  - redis/service.yaml
+  - auth-service/configmap.yaml
+  - auth-service/deployment.yaml
+  - auth-service/service.yaml
+  - skills-service/configmap.yaml
+  - skills-service/deployment.yaml
+  - skills-service/service.yaml
+  - users-service/configmap.yaml
+  - users-service/deployment.yaml
+  - users-service/service.yaml
+  - jobs-service/configmap.yaml
+  - jobs-service/deployment.yaml
+  - jobs-service/service.yaml
+  - api-gateway/configmap.yaml
+  - api-gateway/deployment.yaml
+  - api-gateway/service.yaml
+  - notification-service/configmap.yaml
+  - notification-service/deployment.yaml
+  - notification-service/service.yaml

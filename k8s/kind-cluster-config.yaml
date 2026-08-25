@@ -1,0 +1,21 @@
+# kind cluster config for Phase 5's local Kubernetes practice.
+#
+# Single control-plane node, no workers. This is a deliberate deviation
+# from the plan's "single node is fine, or control-plane + one worker if
+# you want the extra practice, your call" — see docs/DECISIONS.md's Phase
+# 5 implementation notes for why: this machine's Docker Desktop VM (which
+# is what kind's nodes actually run inside, as containers) turned out to
+# have only ~7.65 GiB of memory allocated to it, not the full 16 GiB the
+# host has — discovered live via `docker info` at the start of this
+# phase, not assumed. A second node is pure kubelet/kube-proxy/kindnet
+# overhead with zero scheduling benefit at replicas:1 everywhere, and this
+# budget is tight enough that it isn't worth paying for.
+#
+# No extraPortMappings: verification uses `kubectl port-forward` directly
+# against api-gateway's Service, per the plan — no NodePort/Ingress needed
+# for a sandbox exercise that's torn down at the end of the session.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: skill-bridge
+nodes:
+  - role: control-plane
