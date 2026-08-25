@@ -19,7 +19,7 @@ jobs:
   build-test-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # buf breaking (below) diffs against the .git history of main, so
           # a shallow checkout wouldn't have anything to diff against.
