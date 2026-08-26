@@ -11,11 +11,14 @@ import (
 // Claims is the access-token payload every service in this project should
 // treat as the standard shape. `sub` (via RegisteredClaims.Subject) carries
 // the user ID; `email` is included so the gateway can log/attribute
-// requests without a round trip back to auth-service. Role-based claims
-// (user_role) are deferred until a later phase actually needs
-// authorization decisions beyond "is this a valid token."
+// requests without a round trip back to auth-service. `role` (RBAC) is
+// included so the gateway can make an authorization decision (e.g.
+// createSkill's admin-only gate — see schema.resolvers.go and
+// docs/DECISIONS.md's RBAC notes) from the verified token alone, without
+// a round trip back to auth-service for every request.
 type Claims struct {
 	Email string `json:"email"`
+	Role  string `json:"role"`
 	jwt.RegisteredClaims
 }
 
@@ -25,16 +28,17 @@ type Claims struct {
 // the whole session lifetime for now.
 const DefaultTTL = 1 * time.Hour
 
-// Sign issues an RS256-signed access token for userID/email, using kp and
-// stamping the `kid` in the token header so a verifier knows which JWKS
-// entry to check it against.
-func Sign(kp *KeyPair, issuer, userID, email string, ttl time.Duration) (string, error) {
+// Sign issues an RS256-signed access token for userID/email/role, using kp
+// and stamping the `kid` in the token header so a verifier knows which
+// JWKS entry to check it against.
+func Sign(kp *KeyPair, issuer, userID, email, role string, ttl time.Duration) (string, error) {
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
 	now := time.Now()
 	claims := Claims{
 		Email: email,
+		Role:  role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    issuer,

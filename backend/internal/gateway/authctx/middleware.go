@@ -40,14 +40,14 @@ func Middleware(jwksClient *jwks.Client, log *zap.Logger) func(http.Handler) htt
 				return
 			}
 
-			userID, err := VerifyToken(r.Context(), jwksClient, token)
+			userID, role, err := VerifyToken(r.Context(), jwksClient, token)
 			if err != nil {
 				log.Debug("ignoring invalid bearer token", zap.Error(err))
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), userID)))
+			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), userID, role)))
 		})
 	}
 }

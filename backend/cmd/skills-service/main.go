@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -25,6 +26,7 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/tracing"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/skills"
 )
 
@@ -40,6 +42,23 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = log.Sync() }()
+
+	// Distributed tracing — see cmd/api-gateway/main.go's identical block
+	// and internal/platform/tracing's package doc comment. This is what
+	// lets a trace started by the gateway's incoming request actually
+	// continue into this service's own gRPC handler, rather than stopping
+	// at the gateway (see grpc.StatsHandler(otelgrpc.NewServerHandler())
+	// below, the receiving half of the gateway's otelgrpc client handler).
+	tracerShutdownCtx, tracerShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	tracerShutdown := tracing.InitTracerProvider(tracerShutdownCtx, "skills-service", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"), log)
+	tracerShutdownCancel()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracerShutdown(ctx); err != nil {
+			log.Warn("failed to flush trace exporter on shutdown", zap.Error(err))
+		}
+	}()
 
 	grpcPort := envOr("PORT", "9002")
 	httpPort := envOr("HTTP_PORT", "8082")
@@ -75,6 +94,7 @@ func main() {
 
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	)
 	skillsv1.RegisterSkillsServiceServer(grpcServer, skillsServer)
 	health.NewGRPCServer(grpcServer)

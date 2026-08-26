@@ -23,6 +23,11 @@ import (
 	"github.com/99designs/gqlgen/graphql/playground"
 	coderws "github.com/coder/websocket"
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"github.com/vektah/gqlparser/v2/ast"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -48,6 +53,8 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/telemetry"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/tracing"
 )
 
 func main() {
@@ -62,6 +69,22 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = log.Sync() }()
+
+	// Distributed tracing: see internal/platform/tracing's package doc
+	// comment for why this is a separate concern from the Prometheus
+	// metrics already wired in. Degrades to a no-op tracer, logged once,
+	// if OTEL_EXPORTER_OTLP_ENDPOINT is unset — same convention as every
+	// other optional dependency here.
+	tracerShutdownCtx, tracerShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	tracerShutdown := tracing.InitTracerProvider(tracerShutdownCtx, "api-gateway", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"), log)
+	tracerShutdownCancel()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracerShutdown(ctx); err != nil {
+			log.Warn("failed to flush trace exporter on shutdown", zap.Error(err))
+		}
+	}()
 
 	httpPort := envOr("PORT", "8080")
 
@@ -112,6 +135,7 @@ func main() {
 	authConn, err := grpc.NewClient(
 		authServiceAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithChainUnaryInterceptor(requestid.UnaryClientInterceptor()),
 	)
 	if err != nil {
@@ -125,6 +149,7 @@ func main() {
 	skillsConn, err := grpc.NewClient(
 		skillsServiceAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithChainUnaryInterceptor(requestid.UnaryClientInterceptor()),
 	)
 	if err != nil {
@@ -135,6 +160,7 @@ func main() {
 	jobsConn, err := grpc.NewClient(
 		jobsServiceAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithChainUnaryInterceptor(requestid.UnaryClientInterceptor()),
 	)
 	if err != nil {
@@ -149,6 +175,7 @@ func main() {
 	usersConn, err := grpc.NewClient(
 		usersServiceAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithChainUnaryInterceptor(requestid.UnaryClientInterceptor(), authctx.UnaryClientInterceptor()),
 	)
 	if err != nil {
@@ -184,6 +211,23 @@ func main() {
 		// degrade-gracefully convention as everywhere else.
 		Realtime: redisClient,
 	}
+	// A fresh registry, not prometheus.DefaultRegisterer: this process's
+	// only metrics are the ones this codebase defines plus the standard
+	// Go/process collectors registered explicitly below — nothing
+	// implicitly opts into the global default the way importing a library
+	// that calls promauto.With(prometheus.DefaultRegisterer) internally
+	// might. See internal/platform/telemetry's package doc comment for
+	// why this is metrics, not the wider OpenTelemetry tracing this
+	// codebase's Scope Cuts explicitly deferred. Constructed before srv
+	// below since wsInitFunc/wsCloseFunc (the WebSocket connection-count
+	// gauge) need it too.
+	metricsRegistry := prometheus.NewRegistry()
+	metricsRegistry.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	metrics := telemetry.NewMetrics(metricsRegistry)
+
 	// handler.New (not the deprecated NewDefaultServer) is used
 	// specifically so the WebSocket transport can be configured with
 	// wsInitFunc below — NewDefaultServer already registers its own
@@ -195,13 +239,17 @@ func main() {
 	// extensions) — see that function's implementation in
 	// github.com/99designs/gqlgen/graphql/handler for reference.
 	srv := handler.New(generated.NewExecutableSchema(generated.Config{Resolvers: resolver}))
+	srv.Use(telemetry.NewGraphQLExtension(metrics))
 	srv.AddTransport(transport.Websocket{
 		// InitFunc runs once per WebSocket connection, on that
 		// connection's graphql-ws `connection_init` message — see
 		// wsInitFunc's doc comment and docs/DECISIONS.md's Phase 3.5
 		// notes for why WS auth can't reuse authctx.Middleware's
-		// Authorization-header path.
-		InitFunc:              wsInitFunc(jwksClient, log),
+		// Authorization-header path. Also increments
+		// websocket_connections_active on a successful auth (see
+		// wsInitFunc); wsCloseFunc decrements it.
+		InitFunc:              wsInitFunc(jwksClient, log, metrics),
+		CloseFunc:             wsCloseFunc(metrics),
 		KeepAlivePingInterval: 10 * time.Second,
 		// gqlgen's default WebsocketImplementation (coder/websocket) has
 		// its own Origin check independent of cors.Middleware above (that
@@ -249,6 +297,8 @@ func main() {
 		return nil
 	})
 
+	mux.Handle("/metrics", promhttp.HandlerFor(metricsRegistry, promhttp.HandlerOpts{}))
+
 	if env != "production" {
 		mux.Handle("/", playground.Handler("GraphQL Playground", "/query"))
 		log.Info("GraphQL Playground enabled at /")
@@ -270,11 +320,17 @@ func main() {
 	//     and Job.requiredSkills/Profile.skills/UserSkill.skill in
 	//     schema.resolvers.go).
 	//  4. srv — the actual GraphQL execution.
-	mux.Handle("/query", authctx.Middleware(jwksClient, log)(
+	// otelhttp.NewHandler is the outermost layer: it starts the root span
+	// for the whole request (HTTP or WebSocket-upgrade alike) before
+	// authctx.Middleware even runs, so every downstream gRPC call's
+	// client span (see otelgrpc.NewClientHandler on each connection
+	// above) has a parent to attach to — a trace with no root span is
+	// just a set of disconnected spans, not a trace.
+	mux.Handle("/query", otelhttp.NewHandler(authctx.Middleware(jwksClient, log)(
 		ratelimit.Middleware(redisClient, rateLimitCfg, log)(
 			dataloader.Middleware(skillsClient, usersClient)(srv),
 		),
-	))
+	), "graphql"))
 
 	// Phase 3.5: api-gateway's first RabbitMQ consumer (every earlier use
 	// of RabbitMQ in this codebase was a producer — auth-service
@@ -449,7 +505,7 @@ func envOr(key, fallback string) string {
 // wsConnection struct exists per accepted WebSocket, so this verified
 // identity can never leak into a different connection's context; each
 // connection gets its own InitFunc call and its own derived context.
-func wsInitFunc(jwksClient *jwks.Client, log *zap.Logger) transport.WebsocketInitFunc {
+func wsInitFunc(jwksClient *jwks.Client, log *zap.Logger, metrics *telemetry.Metrics) transport.WebsocketInitFunc {
 	return func(ctx context.Context, initPayload transport.InitPayload) (context.Context, *transport.InitPayload, error) {
 		raw := initPayload.Authorization()
 		if raw == "" {
@@ -461,13 +517,41 @@ func wsInitFunc(jwksClient *jwks.Client, log *zap.Logger) transport.WebsocketIni
 				fmt.Errorf("authentication required: connection_init payload must include an Authorization (or token) field")
 		}
 
-		userID, err := authctx.VerifyToken(ctx, jwksClient, token)
+		userID, role, err := authctx.VerifyToken(ctx, jwksClient, token)
 		if err != nil {
 			log.Debug("rejecting websocket connection: invalid token", zap.Error(err))
 			return transport.WithWebsocketCloseCode(ctx, closeCodeUnauthorized), nil,
 				fmt.Errorf("authentication required: invalid token")
 		}
 
-		return authctx.NewContext(ctx, userID), nil, nil
+		metrics.IncWebsocketConnections()
+		// Marks this context (which becomes the connection's base context —
+		// see this function's doc comment) as "counted," so wsCloseFunc
+		// only decrements websocket_connections_active for a connection
+		// that actually got past auth and incremented it in the first
+		// place — an upgrade rejected above never reaches this line, and
+		// never nudges the gauge either.
+		ctx = context.WithValue(ctx, wsCountedKey{}, true)
+		return authctx.NewContext(ctx, userID, role), nil, nil
+	}
+}
+
+// wsCountedKey is the context key wsInitFunc/wsCloseFunc share privately —
+// unexported so nothing outside this file can set or read it, same
+// "no risk of collision with anyone else's context key" reasoning as
+// every other private context-key type in this codebase.
+type wsCountedKey struct{}
+
+// wsCloseFunc pairs with wsInitFunc's IncWebsocketConnections call —
+// passed as transport.Websocket's CloseFunc (see the AddTransport(...)
+// call above), it fires once per closed connection and decrements
+// websocket_connections_active, but only for a connection wsInitFunc
+// actually counted (see wsCountedKey) — an unauthenticated upgrade that
+// never incremented the gauge must never decrement it into the negative.
+func wsCloseFunc(metrics *telemetry.Metrics) transport.WebsocketCloseFunc {
+	return func(ctx context.Context, _ int) {
+		if counted, _ := ctx.Value(wsCountedKey{}).(bool); counted {
+			metrics.DecWebsocketConnections()
+		}
 	}
 }

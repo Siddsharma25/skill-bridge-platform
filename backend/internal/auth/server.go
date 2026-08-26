@@ -109,6 +109,7 @@ func (s *Server) Register(ctx context.Context, req *authv1.RegisterRequest) (*au
 		ID:           uuid.NewString(),
 		Email:        email,
 		PasswordHash: string(hash),
+		Role:         RoleUser,
 	}
 	if err := s.db.WithContext(ctx).Create(&cred).Error; err != nil {
 		if isDuplicateKey(err) {
@@ -118,7 +119,7 @@ func (s *Server) Register(ctx context.Context, req *authv1.RegisterRequest) (*au
 		return nil, status.Error(codes.Internal, "failed to create account")
 	}
 
-	token, err := jwks.Sign(s.keyPair, s.issuer, cred.ID, cred.Email, 0)
+	token, err := jwks.Sign(s.keyPair, s.issuer, cred.ID, cred.Email, cred.Role, 0)
 	if err != nil {
 		log.Error("failed to sign token", zap.Error(err))
 		return nil, status.Error(codes.Internal, "account created but failed to issue a session")
@@ -214,7 +215,7 @@ func (s *Server) Login(ctx context.Context, req *authv1.LoginRequest) (*authv1.L
 		return nil, status.Error(codes.Unauthenticated, invalidCredsMsg)
 	}
 
-	token, err := jwks.Sign(s.keyPair, s.issuer, cred.ID, cred.Email, 0)
+	token, err := jwks.Sign(s.keyPair, s.issuer, cred.ID, cred.Email, cred.Role, 0)
 	if err != nil {
 		log.Error("failed to sign token", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to issue a session")

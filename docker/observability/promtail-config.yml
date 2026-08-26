@@ -1,0 +1,28 @@
+# Tails this project's local-dev log files (see docs/RUNNING_LOCALLY.md —
+# every backend service run via `go run`/a built binary logs structured
+# JSON to stdout, which local verification passes have redirected to
+# /tmp/<service>.log) and ships each line to Loki. This is the "no Docker,
+# services run as bare host processes" story specifically — a real
+# docker-compose deployment would instead use Promtail's Docker service
+# discovery to tail container logs directly; this config's static
+# /hostlogs mount is the local-dev equivalent, matching how this project
+# already runs day to day (see docker-compose.observability.yml's own
+# comment).
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/promtail-positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: skillbridge
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: skillbridge
+          __path__: /hostlogs/*.log

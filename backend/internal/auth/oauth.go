@@ -229,13 +229,13 @@ func (s *Server) GoogleOAuthCallback(ctx context.Context, req *authv1.GoogleOAut
 		return nil, status.Error(codes.Internal, "google did not return a usable identity")
 	}
 
-	userID, err := s.linkOrCreateGoogleUser(ctx, info)
+	userID, role, err := s.linkOrCreateGoogleUser(ctx, info)
 	if err != nil {
 		log.Error("failed to resolve google identity", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to complete google sign-in")
 	}
 
-	token, err := jwks.Sign(s.keyPair, s.issuer, userID, info.Email, 0)
+	token, err := jwks.Sign(s.keyPair, s.issuer, userID, info.Email, role, 0)
 	if err != nil {
 		log.Error("failed to sign token", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to issue a session")
@@ -263,16 +263,28 @@ func (s *Server) GoogleOAuthCallback(ctx context.Context, req *authv1.GoogleOAut
 // step 1 — only the (provider, subject) pair is, since Google's subject
 // is the one value guaranteed stable for a given Google Account even if
 // its email later changes.
-func (s *Server) linkOrCreateGoogleUser(ctx context.Context, info *googleUserInfo) (string, error) {
+// linkOrCreateGoogleUser returns (userID, role, error) — role is threaded
+// through from findOrCreateCredentialForEmail (see its own doc comment)
+// so GoogleOAuthCallback can sign a token with the caller's real role
+// rather than assuming RoleUser regardless of who's actually signing in.
+func (s *Server) linkOrCreateGoogleUser(ctx context.Context, info *googleUserInfo) (string, string, error) {
 	if existing, err := s.oauthStore.findIdentity(ctx, ProviderGoogle, info.Subject); err != nil {
-		return "", fmt.Errorf("look up existing identity: %w", err)
+		return "", "", fmt.Errorf("look up existing identity: %w", err)
 	} else if existing != nil {
-		return existing.UserID, nil
+		cred, err := s.oauthStore.findCredentialByEmail(ctx, info.Email)
+		if err != nil {
+			return "", "", fmt.Errorf("look up credential for existing identity: %w", err)
+		}
+		role := RoleUser
+		if cred != nil {
+			role = cred.Role
+		}
+		return existing.UserID, role, nil
 	}
 
-	userID, err := s.findOrCreateCredentialForEmail(ctx, info.Email)
+	userID, role, err := s.findOrCreateCredentialForEmail(ctx, info.Email)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	identity := &OAuthIdentity{
@@ -283,29 +295,34 @@ func (s *Server) linkOrCreateGoogleUser(ctx context.Context, info *googleUserInf
 		Email:           info.Email,
 	}
 	if err := s.oauthStore.createIdentity(ctx, identity); err != nil {
-		return "", fmt.Errorf("create oauth identity: %w", err)
+		return "", "", fmt.Errorf("create oauth identity: %w", err)
 	}
-	return userID, nil
+	return userID, role, nil
 }
 
-func (s *Server) findOrCreateCredentialForEmail(ctx context.Context, email string) (string, error) {
+// findOrCreateCredentialForEmail returns (userID, role, error) — role is
+// RoleUser for a newly created credential, or whatever role an existing
+// one already carries (so a promoted admin who later goes through this
+// path, e.g. their first Google login, keeps their admin role rather than
+// being silently reset to RoleUser).
+func (s *Server) findOrCreateCredentialForEmail(ctx context.Context, email string) (string, string, error) {
 	existingCred, err := s.oauthStore.findCredentialByEmail(ctx, email)
 	if err != nil {
-		return "", fmt.Errorf("look up existing credential: %w", err)
+		return "", "", fmt.Errorf("look up existing credential: %w", err)
 	}
 	if existingCred != nil {
-		return existingCred.ID, nil
+		return existingCred.ID, existingCred.Role, nil
 	}
 
 	hash, err := randomUnusablePasswordHash()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	cred := &Credential{ID: uuid.NewString(), Email: email, PasswordHash: hash}
+	cred := &Credential{ID: uuid.NewString(), Email: email, PasswordHash: hash, Role: RoleUser}
 	if err := s.oauthStore.createCredential(ctx, cred); err != nil {
-		return "", fmt.Errorf("create credential: %w", err)
+		return "", "", fmt.Errorf("create credential: %w", err)
 	}
-	return cred.ID, nil
+	return cred.ID, cred.Role, nil
 }
 
 // randomUnusablePasswordHash returns a bcrypt hash of a cryptographically

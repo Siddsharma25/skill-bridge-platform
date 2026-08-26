@@ -29,12 +29,18 @@ import (
 const MetadataKey = "user_id"
 
 type contextKey struct{}
+type roleContextKey struct{}
 
 var ctxKey = contextKey{}
+var roleCtxKey = roleContextKey{}
 
-// NewContext stores the verified user ID (a JWT `sub` claim) in ctx.
-func NewContext(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, ctxKey, userID)
+// NewContext stores the verified user ID (`sub`) and role (`role`) claims
+// in ctx. role is RBAC's context-carrying half — see
+// schema.resolvers.go's requireAdmin and docs/DECISIONS.md's RBAC notes
+// for how a resolver actually uses it.
+func NewContext(ctx context.Context, userID, role string) context.Context {
+	ctx = context.WithValue(ctx, ctxKey, userID)
+	return context.WithValue(ctx, roleCtxKey, role)
 }
 
 // UserID retrieves the verified user ID previously stored by NewContext.
@@ -47,6 +53,16 @@ func UserID(ctx context.Context) (string, bool) {
 	return id, ok && id != ""
 }
 
+// Role retrieves the verified caller's role previously stored by
+// NewContext. ok is false under the exact same conditions UserID's is —
+// there is no verified caller at all without a role coming along with it,
+// since both are set together by the one NewContext call a verified
+// token produces.
+func Role(ctx context.Context) (string, bool) {
+	role, ok := ctx.Value(roleCtxKey).(string)
+	return role, ok && role != ""
+}
+
 // errNoSubject is returned by VerifyToken when a token parses and
 // verifies fine but carries no `sub` claim — a token this codebase's own
 // jwks.Sign would never produce, but a defensive check regardless (same
@@ -54,22 +70,31 @@ func UserID(ctx context.Context) (string, bool) {
 var errNoSubject = errors.New("authctx: token has no subject claim")
 
 // VerifyToken verifies a raw bearer token (no "Bearer " prefix) against
-// jwksClient and returns its `sub` claim, or an error if the token is
-// missing, malformed, expired, or fails signature verification. This is
-// the one place token verification actually happens — both Middleware
-// (HTTP requests, below) and the WebSocket `connection_init` handshake
-// (see cmd/api-gateway/main.go's wsInitFunc, Phase 3.5) call this rather
-// than each re-implementing "parse + verify + extract subject," so there
-// is exactly one code path to get that logic right in.
-func VerifyToken(ctx context.Context, jwksClient *jwks.Client, token string) (string, error) {
+// jwksClient and returns its `sub` and `role` claims, or an error if the
+// token is missing, malformed, expired, or fails signature verification.
+// This is the one place token verification actually happens — both
+// Middleware (HTTP requests, below) and the WebSocket `connection_init`
+// handshake (see cmd/api-gateway/main.go's wsInitFunc, Phase 3.5) call
+// this rather than each re-implementing "parse + verify + extract
+// claims," so there is exactly one code path to get that logic right in.
+// A token signed before RBAC existed (impossible in practice — every
+// live JWT has a 1-hour TTL, far shorter than this change took to ship —
+// but worth naming) would carry an empty role; RoleUser is the safe
+// default that decision, not an empty string an authorization check might
+// accidentally treat as "no restriction."
+func VerifyToken(ctx context.Context, jwksClient *jwks.Client, token string) (userID, role string, err error) {
 	claims, err := jwks.Verify(ctx, jwksClient, token)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if claims.Subject == "" {
-		return "", errNoSubject
+		return "", "", errNoSubject
 	}
-	return claims.Subject, nil
+	role = claims.Role
+	if role == "" {
+		role = "user"
+	}
+	return claims.Subject, role, nil
 }
 
 // UnaryClientInterceptor forwards the verified user ID (if any) from ctx

@@ -85,12 +85,13 @@ type ComplexityRoot struct {
 	}
 
 	Query struct {
-		GoogleAuthURL func(childComplexity int, state string) int
-		Job           func(childComplexity int, id string) int
-		Jobs          func(childComplexity int) int
-		MyProfile     func(childComplexity int) int
-		Ping          func(childComplexity int) int
-		Skills        func(childComplexity int) int
+		GoogleAuthURL       func(childComplexity int, state string) int
+		Job                 func(childComplexity int, id string) int
+		Jobs                func(childComplexity int) int
+		MyProfile           func(childComplexity int) int
+		NotificationHistory func(childComplexity int) int
+		Ping                func(childComplexity int) int
+		Skills              func(childComplexity int) int
 	}
 
 	Skill struct {
@@ -136,6 +137,7 @@ type QueryResolver interface {
 	Jobs(ctx context.Context) ([]*model.Job, error)
 	Job(ctx context.Context, id string) (*model.Job, error)
 	MyProfile(ctx context.Context) (*model.Profile, error)
+	NotificationHistory(ctx context.Context) ([]*model.Notification, error)
 }
 type SubscriptionResolver interface {
 	OnNotification(ctx context.Context) (<-chan *model.Notification, error)
@@ -394,6 +396,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Query.MyProfile(childComplexity), true
+	case "Query.notificationHistory":
+		if e.ComplexityRoot.Query.NotificationHistory == nil {
+			break
+		}
+
+		return e.ComplexityRoot.Query.NotificationHistory(childComplexity), true
 	case "Query.ping":
 		if e.ComplexityRoot.Query.Ping == nil {
 			break
@@ -687,8 +695,10 @@ type Mutation {
   googleOAuthCallback(code: String!): AuthPayload!
 
   """
-  Adds a new skill to the shared taxonomy. Unauthenticated in Phase 1b —
-  see docs/DECISIONS.md.
+  Adds a new skill to the shared taxonomy. Requires a valid bearer token
+  whose role claim is "admin" (RBAC — see docs/DECISIONS.md). Returns a
+  GraphQL error if the caller isn't authenticated at all, and a different
+  one if they're authenticated but not an admin.
   """
   createSkill(name: String!, category: String!): Skill!
 
@@ -746,6 +756,20 @@ type Query {
   none exists yet. Requires a valid bearer token.
   """
   myProfile: Profile
+
+  """
+  Returns up to the caller's most recent notifications (newest first),
+  read from a Redis Stream api-gateway's realtime bridge appends to
+  alongside its live pub/sub publish (see internal/gateway/realtime and
+  internal/platform/cache's Stream type) — unlike onNotification's
+  subscription, this works even if nothing was subscribed at the moment a
+  notification happened, so a client can backfill on load instead of only
+  ever seeing what arrives after it connects. Requires a valid bearer
+  token. Returns an empty list (not an error) if Redis is unavailable on
+  this instance, same "degrade to nothing rather than fail the query"
+  convention as everywhere else Redis is optional in this codebase.
+  """
+  notificationHistory: [Notification!]!
 }
 `, BuiltIn: false},
 }
@@ -2191,6 +2215,38 @@ func (ec *executionContext) fieldContext_Query_myProfile(_ context.Context, fiel
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return ec.childFields_Profile(ctx, field)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_notificationHistory(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Query_notificationHistory(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return ec.Resolvers.Query().NotificationHistory(ctx)
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v []*model.Notification) graphql.Marshaler {
+			return ec.marshalNNotification2ᚕᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐNotificationᚄ(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Query_notificationHistory(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.childFields_Notification(ctx, field)
 		},
 	}
 	return fc, nil
@@ -4096,6 +4152,28 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "notificationHistory":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_notificationHistory(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -4816,6 +4894,22 @@ func (ec *executionContext) marshalNJobMatch2ᚖgithubᚗcomᚋSiddsharma25ᚋsk
 
 func (ec *executionContext) marshalNNotification2githubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐNotification(ctx context.Context, sel ast.SelectionSet, v model.Notification) graphql.Marshaler {
 	return ec._Notification(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNNotification2ᚕᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐNotificationᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.Notification) graphql.Marshaler {
+	ret := graphql.MarshalSliceConcurrently(ctx, len(v), 0, false, func(ctx context.Context, i int) graphql.Marshaler {
+		fc := graphql.GetFieldContext(ctx)
+		fc.Result = &v[i]
+		return ec.marshalNNotification2ᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐNotification(ctx, sel, v[i])
+	})
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) marshalNNotification2ᚖgithubᚗcomᚋSiddsharma25ᚋskillᚑbridgeᚑplatformᚋbackendᚋinternalᚋgatewayᚋgraphᚋmodelᚐNotification(ctx context.Context, sel ast.SelectionSet, v *model.Notification) graphql.Marshaler {

@@ -77,6 +77,54 @@ type PubSub interface {
 	Subscribe(ctx context.Context, channel string) (Subscription, bool)
 }
 
+// Stream is the subset of Client's behavior backing a per-user bounded
+// notification history — a Redis Stream, not the pub/sub channel PubSub
+// wraps. Pub/sub has zero delivery guarantee and no memory: a client that
+// isn't subscribed at the moment a notification is published never sees
+// it, including on every page refresh (the frontend's documented "gone on
+// refresh" gap — see frontend/README.md). A Stream is an append-only log
+// Redis retains (up to a trim limit) independent of who's listening, so a
+// client can ask "what did I miss" on load instead of only "tell me what
+// happens next." Split from PubSub for the same reason PubSub is split
+// from Cache/RateLimiter: a genuinely different Redis primitive (XADD/
+// XREVRANGE vs PUBLISH/SUBSCRIBE) sharing one connection, not a different
+// underlying client.
+type Stream interface {
+	// AppendNotification appends payload (typically the same JSON already
+	// being published to PubSub) to the stream at key via XADD, trimmed
+	// to approximately the most recent streamMaxLen entries (MAXLEN ~ —
+	// approximate trimming, not exact: Redis trims lazily in whole radix
+	// tree nodes rather than evicting precisely one entry per add, which
+	// is the standard production trade-off — see cache.go's
+	// streamMaxLen doc comment for why exactness isn't worth its extra
+	// cost here). Best-effort, same swallow-and-log convention as
+	// Publish: a failed history write must never fail the realtime bridge
+	// that's also delivering this notification live.
+	AppendNotification(ctx context.Context, key, payload string)
+	// RecentNotifications returns up to limit of the most recently
+	// appended payloads at key, newest first (XREVRANGE). ok is false
+	// when Redis is disabled/unreachable, same "unavailable is a
+	// distinct, checkable return" convention as Subscribe/Incr — the
+	// caller (the notificationHistory resolver) must treat that as "no
+	// history available on this instance," not an empty-but-successful
+	// result.
+	RecentNotifications(ctx context.Context, key string, limit int64) ([]string, bool)
+}
+
+// RealtimeStore combines PubSub and Stream — the full set of Redis
+// capabilities api-gateway's realtime notification path needs: live
+// fan-out for the onNotification subscription, and a bounded history for
+// the notificationHistory query. *Client implements both, so one Client
+// value satisfies this without any adapter code; a test that only cares
+// about one half can still implement just PubSub or just Stream directly
+// where only that interface is asked for (see realtime/bridge_test.go's
+// fakePubSub, which is *not* asked to also implement Stream anywhere it
+// doesn't need to).
+type RealtimeStore interface {
+	PubSub
+	Stream
+}
+
 // Subscription is the minimal handle Subscribe hands back — satisfied
 // directly by *redis.PubSub (its Channel/Close methods already match this
 // shape), and by a fake in tests. Closing it is what releases the
@@ -226,6 +274,59 @@ func (c *Client) Subscribe(ctx context.Context, channel string) (Subscription, b
 		return nil, false
 	}
 	return c.rdb.Subscribe(ctx, channel), true
+}
+
+// streamMaxLen caps how many recent notifications a per-user stream
+// retains. Approximate trimming (see AppendNotification) means Redis may
+// keep somewhat more than this at any instant, but it converges back down
+// on the next add — fine for a "recent history" feature where the exact
+// cutoff has never mattered to any caller, only "roughly this many."
+const streamMaxLen = 50
+
+// AppendNotification implements Stream.AppendNotification.
+func (c *Client) AppendNotification(ctx context.Context, key, payload string) {
+	if !c.Enabled() {
+		c.log.Warn("stream disabled (no REDIS_URL); notification history will not include this entry",
+			zap.String("key", key))
+		return
+	}
+	err := c.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: key,
+		MaxLen: streamMaxLen,
+		Approx: true,
+		Values: map[string]any{streamPayloadField: payload},
+	}).Err()
+	if err != nil {
+		c.log.Warn("redis XADD failed; notification history will not include this entry",
+			zap.String("key", key), zap.Error(err))
+	}
+}
+
+// streamPayloadField is the single field name every stream entry stores
+// its JSON payload under — one field per entry is enough here (unlike a
+// Redis Hash's natural multi-field use), so a fixed constant name rather
+// than a caller-supplied one keeps AppendNotification/RecentNotifications
+// from needing to agree on it out of band.
+const streamPayloadField = "payload"
+
+// RecentNotifications implements Stream.RecentNotifications.
+func (c *Client) RecentNotifications(ctx context.Context, key string, limit int64) ([]string, bool) {
+	if !c.Enabled() {
+		return nil, false
+	}
+	msgs, err := c.rdb.XRevRangeN(ctx, key, "+", "-", limit).Result()
+	if err != nil {
+		c.log.Warn("redis XREVRANGE failed; notification history unavailable",
+			zap.String("key", key), zap.Error(err))
+		return nil, false
+	}
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		if payload, ok := m.Values[streamPayloadField].(string); ok {
+			out = append(out, payload)
+		}
+	}
+	return out, true
 }
 
 // Close closes the underlying Redis connection. Safe to call on a disabled

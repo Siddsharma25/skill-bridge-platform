@@ -18,7 +18,7 @@ func TestVerifyToken_ValidTokenReturnsSubject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
-	tokenStr, err := jwks.Sign(kp, "test-issuer", "user-123", "user@example.com", time.Minute)
+	tokenStr, err := jwks.Sign(kp, "test-issuer", "user-123", "user@example.com", "user", time.Minute)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -27,12 +27,15 @@ func TestVerifyToken_ValidTokenReturnsSubject(t *testing.T) {
 	defer srv.Close()
 	client := jwks.NewClient(srv.URL, time.Minute)
 
-	userID, err := VerifyToken(t.Context(), client, tokenStr)
+	userID, role, err := VerifyToken(t.Context(), client, tokenStr)
 	if err != nil {
 		t.Fatalf("VerifyToken: %v", err)
 	}
 	if userID != "user-123" {
 		t.Errorf("expected user-123, got %q", userID)
+	}
+	if role != "user" {
+		t.Errorf("expected role %q, got %q", "user", role)
 	}
 }
 
@@ -51,7 +54,7 @@ func TestVerifyToken_InvalidTokenErrors(t *testing.T) {
 	defer srv.Close()
 	client := jwks.NewClient(srv.URL, time.Minute)
 
-	if _, err := VerifyToken(t.Context(), client, "not-a-jwt-at-all"); err == nil {
+	if _, _, err := VerifyToken(t.Context(), client, "not-a-jwt-at-all"); err == nil {
 		t.Fatal("expected an error for a garbage token")
 	}
 }
@@ -65,21 +68,31 @@ func TestVerifyToken_EmptyTokenErrors(t *testing.T) {
 	defer srv.Close()
 	client := jwks.NewClient(srv.URL, time.Minute)
 
-	if _, err := VerifyToken(t.Context(), client, ""); err == nil {
+	if _, _, err := VerifyToken(t.Context(), client, ""); err == nil {
 		t.Fatal("expected an error for an empty token")
 	}
 }
 
 func TestNewContextAndUserID_RoundTrip(t *testing.T) {
-	ctx := NewContext(t.Context(), "user-123")
+	ctx := NewContext(t.Context(), "user-123", "admin")
 	id, ok := UserID(ctx)
 	if !ok || id != "user-123" {
 		t.Fatalf("expected (user-123, true), got (%q, %v)", id, ok)
+	}
+	role, ok := Role(ctx)
+	if !ok || role != "admin" {
+		t.Fatalf("expected (admin, true), got (%q, %v)", role, ok)
 	}
 }
 
 func TestUserID_AbsentContextReturnsFalse(t *testing.T) {
 	if _, ok := UserID(t.Context()); ok {
 		t.Fatal("expected ok=false when no user ID was stored in context")
+	}
+}
+
+func TestRole_AbsentContextReturnsFalse(t *testing.T) {
+	if _, ok := Role(t.Context()); ok {
+		t.Fatal("expected ok=false when no role was stored in context")
 	}
 }

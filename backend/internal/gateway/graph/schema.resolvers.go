@@ -112,10 +112,16 @@ func (r *mutationResolver) GoogleOAuthCallback(ctx context.Context, code string)
 	}, nil
 }
 
-// CreateSkill is the resolver for the createSkill field. Unauthenticated
-// in Phase 1b — there is no role system yet, so anyone can add a skill to
-// the taxonomy (see docs/DECISIONS.md).
+// CreateSkill is the resolver for the createSkill field. Requires an
+// authenticated caller with the admin role (see requireAdmin and
+// docs/DECISIONS.md's RBAC notes) — skill-taxonomy management is the one
+// operation this project gates by role so far; createJob (below) stays
+// unauthenticated, a deliberately different call for a deliberately
+// different resource (see docs/DECISIONS.md).
 func (r *mutationResolver) CreateSkill(ctx context.Context, name string, category string) (*model.Skill, error) {
+	if _, err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := r.SkillsClient.CreateSkill(ctx, &skillsv1.CreateSkillRequest{Name: name, Category: category})
 	if err != nil {
 		return nil, translateGRPCError(err)
@@ -124,7 +130,9 @@ func (r *mutationResolver) CreateSkill(ctx context.Context, name string, categor
 }
 
 // CreateJob is the resolver for the createJob field. Unauthenticated in
-// Phase 1b, same reasoning as CreateSkill.
+// Phase 1b — no role gate on job postings (see docs/DECISIONS.md's RBAC
+// notes for why createSkill, not createJob, was picked as this project's
+// one RBAC example).
 func (r *mutationResolver) CreateJob(ctx context.Context, title string, description string, requiredSkillIds []string) (*model.Job, error) {
 	resp, err := r.JobsClient.CreateJob(ctx, &jobsv1.CreateJobRequest{
 		Title:            title,
@@ -263,6 +271,44 @@ func (r *queryResolver) MyProfile(ctx context.Context) (*model.Profile, error) {
 		return nil, translateGRPCError(err)
 	}
 	return toModelProfile(resp.GetProfile()), nil
+}
+
+// NotificationHistory is the resolver for the notificationHistory field.
+// Reads back UserStreamKey(userID) via RecentNotifications (Redis
+// XREVRANGE, newest first) — the Stream-backed counterpart to
+// onNotification's pub/sub subscription; see internal/gateway/realtime
+// and internal/platform/cache's Stream type for why these are two
+// separate Redis primitives rather than one.
+func (r *queryResolver) NotificationHistory(ctx context.Context) ([]*model.Notification, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	payloads, ok := r.Realtime.RecentNotifications(ctx, realtime.UserStreamKey(userID), notificationHistoryLimit)
+	if !ok {
+		// Same "degrade to an empty result, not an error" convention as
+		// every other optional-Redis read in this codebase — see the
+		// field's own schema doc comment.
+		return nil, nil
+	}
+
+	out := make([]*model.Notification, 0, len(payloads))
+	for _, payload := range payloads {
+		var notif rabbitmq.RealtimeNotification
+		if err := json.Unmarshal([]byte(payload), &notif); err != nil {
+			// Same "log and drop, never fail the whole list over one bad
+			// entry" discipline as onNotification's decode loop below.
+			continue
+		}
+		out = append(out, &model.Notification{
+			ID:        notif.ID,
+			Type:      notif.Type,
+			Message:   notif.Message,
+			CreatedAt: notif.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out, nil
 }
 
 // OnNotification is the resolver for the onNotification field (Phase

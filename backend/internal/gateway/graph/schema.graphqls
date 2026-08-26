@@ -140,8 +140,10 @@ type Mutation {
   googleOAuthCallback(code: String!): AuthPayload!
 
   """
-  Adds a new skill to the shared taxonomy. Unauthenticated in Phase 1b —
-  see docs/DECISIONS.md.
+  Adds a new skill to the shared taxonomy. Requires a valid bearer token
+  whose role claim is "admin" (RBAC — see docs/DECISIONS.md). Returns a
+  GraphQL error if the caller isn't authenticated at all, and a different
+  one if they're authenticated but not an admin.
   """
   createSkill(name: String!, category: String!): Skill!
 
@@ -199,4 +201,18 @@ type Query {
   none exists yet. Requires a valid bearer token.
   """
   myProfile: Profile
+
+  """
+  Returns up to the caller's most recent notifications (newest first),
+  read from a Redis Stream api-gateway's realtime bridge appends to
+  alongside its live pub/sub publish (see internal/gateway/realtime and
+  internal/platform/cache's Stream type) — unlike onNotification's
+  subscription, this works even if nothing was subscribed at the moment a
+  notification happened, so a client can backfill on load instead of only
+  ever seeing what arrives after it connects. Requires a valid bearer
+  token. Returns an empty list (not an error) if Redis is unavailable on
+  this instance, same "degrade to nothing rather than fail the query"
+  convention as everywhere else Redis is optional in this codebase.
+  """
+  notificationHistory: [Notification!]!
 }

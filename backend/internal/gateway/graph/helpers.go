@@ -160,10 +160,51 @@ func (r *Resolver) resolveDisplayNames(ctx context.Context, ids []string) ([]str
 // that requires an authenticated caller (myProfile, updateProfile,
 // addUserSkill — the first authenticated operations in this project)
 // calls this first. See internal/gateway/authctx and docs/DECISIONS.md.
+// notificationHistoryLimit is how many recent notifications the
+// notificationHistory resolver (schema.resolvers.go) asks the Redis
+// Stream for — deliberately the same number cache.streamMaxLen trims
+// each per-user stream down to, since asking for more than the stream
+// ever retains would just always come back short. Lives here, not in
+// schema.resolvers.go, because gqlgen's own header comment on that file
+// says exactly why: a bare top-level declaration with no matching schema
+// field gets swept into a commented-out "move this out" block on every
+// regeneration.
+const notificationHistoryLimit = 50
+
 func requireUserID(ctx context.Context) (string, error) {
 	userID, ok := authctx.UserID(ctx)
 	if !ok {
 		return "", &gqlError{msg: "authentication required"}
+	}
+	return userID, nil
+}
+
+// roleAdmin is intentionally the plain string literal "admin" — not
+// auth.RoleAdmin — so this gateway-layer package never imports
+// auth-service's internal package just to name a role: RBAC's rule here
+// is "the verified token's role claim, whatever auth-service put there,
+// must equal this string," and that string is part of this codebase's
+// wire contract (a JWT claim value), not an implementation detail of
+// auth-service worth coupling two otherwise-independent packages over.
+const roleAdmin = "admin"
+
+// requireAdmin is requireUserID's RBAC-aware sibling: the caller must be
+// authenticated *and* their verified token's role claim must be
+// roleAdmin. Used by createSkill (see schema.resolvers.go) — see
+// docs/DECISIONS.md's RBAC notes for why skill-taxonomy management is the
+// one operation gated so far, and why "authenticated but not admin" and
+// "not authenticated at all" return different, honest error messages
+// rather than the same generic "forbidden" (this is authorization
+// feedback for a legitimate account holder, not a security boundary where
+// distinguishing the two would leak anything an attacker doesn't already
+// know from simply trying both).
+func requireAdmin(ctx context.Context) (string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return "", err
+	}
+	if role, ok := authctx.Role(ctx); !ok || role != roleAdmin {
+		return "", &gqlError{msg: "admin role required"}
 	}
 	return userID, nil
 }

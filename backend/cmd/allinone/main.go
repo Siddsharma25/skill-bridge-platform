@@ -81,7 +81,12 @@ import (
 	"github.com/99designs/gqlgen/graphql/playground"
 	coderws "github.com/coder/websocket"
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/vektah/gqlparser/v2/ast"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -112,6 +117,8 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/telemetry"
+	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/tracing"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/skills"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/users"
 )
@@ -165,6 +172,20 @@ func main() {
 	}
 	defer func() { _ = log.Sync() }()
 
+	// Distributed tracing — see cmd/api-gateway/main.go's identical block
+	// and internal/platform/tracing's package doc comment. Degrades to a
+	// no-op tracer if OTEL_EXPORTER_OTLP_ENDPOINT is unset.
+	tracerShutdownCtx, tracerShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	tracerShutdown := tracing.InitTracerProvider(tracerShutdownCtx, "allinone", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"), log)
+	tracerShutdownCancel()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracerShutdown(ctx); err != nil {
+			log.Warn("failed to flush trace exporter on shutdown", zap.Error(err))
+		}
+	}()
+
 	// ==================================================================
 	// auth-service — identical construction to cmd/auth-service/main.go,
 	// see that file for the why behind each piece.
@@ -193,7 +214,7 @@ func main() {
 
 	authServer := auth.NewServer(authDB, keyPair, issuer, googleExchanger, authRabbitProducer, log)
 
-	authGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()))
+	authGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	authv1.RegisterAuthServiceServer(authGRPCServer, authServer)
 	health.NewGRPCServer(authGRPCServer)
 	reflection.Register(authGRPCServer)
@@ -214,7 +235,7 @@ func main() {
 
 	skillsServer := skills.NewServer(skillsDB, skillsCache, skillsKafkaProducer, log)
 
-	skillsGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()))
+	skillsGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	skillsv1.RegisterSkillsServiceServer(skillsGRPCServer, skillsServer)
 	health.NewGRPCServer(skillsGRPCServer)
 	reflection.Register(skillsGRPCServer)
@@ -233,7 +254,7 @@ func main() {
 
 	usersServer := users.NewServer(usersDB, usersKafkaProducer, log)
 
-	usersGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()))
+	usersGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	usersv1.RegisterUsersServiceServer(usersGRPCServer, usersServer)
 	health.NewGRPCServer(usersGRPCServer)
 	reflection.Register(usersGRPCServer)
@@ -259,7 +280,7 @@ func main() {
 
 	jobsServer := jobs.NewServer(jobsDB, jobsCache, jobsKafkaProducer, log)
 
-	jobsGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()))
+	jobsGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	jobsv1.RegisterJobsServiceServer(jobsGRPCServer, jobsServer)
 	health.NewGRPCServer(jobsGRPCServer)
 	reflection.Register(jobsGRPCServer)
@@ -342,9 +363,23 @@ func main() {
 		JobsClient:   jobsClient,
 		Realtime:     gatewayRedis,
 	}
+	// See api-gateway/main.go's identical block for why this is a fresh
+	// registry rather than prometheus.DefaultRegisterer, and why this is
+	// metrics rather than the wider OpenTelemetry tracing this codebase's
+	// Scope Cuts deferred (internal/platform/telemetry's package doc
+	// comment).
+	metricsRegistry := prometheus.NewRegistry()
+	metricsRegistry.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	metrics := telemetry.NewMetrics(metricsRegistry)
+
 	srv := handler.New(generated.NewExecutableSchema(generated.Config{Resolvers: resolver}))
+	srv.Use(telemetry.NewGraphQLExtension(metrics))
 	srv.AddTransport(transport.Websocket{
-		InitFunc:              wsInitFunc(jwksClient, log),
+		InitFunc:              wsInitFunc(jwksClient, log, metrics),
+		CloseFunc:             wsCloseFunc(metrics),
 		KeepAlivePingInterval: 10 * time.Second,
 		// See api-gateway/main.go's identical Implementation field for
 		// why this is required: gqlgen's default WebsocketImplementation
@@ -381,15 +416,17 @@ func main() {
 		return nil
 	})
 
+	mux.Handle("/metrics", promhttp.HandlerFor(metricsRegistry, promhttp.HandlerOpts{}))
+
 	if env != "production" {
 		mux.Handle("/", playground.Handler("GraphQL Playground", "/query"))
 		log.Info("GraphQL Playground enabled at /")
 	}
-	mux.Handle("/query", authctx.Middleware(jwksClient, log)(
+	mux.Handle("/query", otelhttp.NewHandler(authctx.Middleware(jwksClient, log)(
 		ratelimit.Middleware(gatewayRedis, rateLimitCfg, log)(
 			dataloader.Middleware(skillsClient, usersClient)(srv),
 		),
-	))
+	), "graphql"))
 
 	realtimeBridge := realtime.NewBridge(gatewayRedis, log)
 	realtimeConsumerCtx, cancelRealtimeConsumer := context.WithCancel(context.Background())
@@ -597,6 +634,7 @@ func dialLoopback(log *zap.Logger, serviceName, addr string, interceptors ...grp
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithChainUnaryInterceptor(interceptors...),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 	)
 	if err != nil {
 		log.Fatal("failed to create "+serviceName+" gRPC client", zap.String("addr", addr), zap.Error(err))
@@ -654,8 +692,9 @@ const closeCodeUnauthorized = 4401
 
 // wsInitFunc authenticates a WebSocket connection at graphql-ws's
 // `connection_init` step — see cmd/api-gateway/main.go's copy of this
-// function for the full reasoning.
-func wsInitFunc(jwksClient *jwks.Client, log *zap.Logger) transport.WebsocketInitFunc {
+// function for the full reasoning, including wsCountedKey/wsCloseFunc
+// below (also copied verbatim).
+func wsInitFunc(jwksClient *jwks.Client, log *zap.Logger, metrics *telemetry.Metrics) transport.WebsocketInitFunc {
 	return func(ctx context.Context, initPayload transport.InitPayload) (context.Context, *transport.InitPayload, error) {
 		raw := initPayload.Authorization()
 		if raw == "" {
@@ -667,13 +706,25 @@ func wsInitFunc(jwksClient *jwks.Client, log *zap.Logger) transport.WebsocketIni
 				fmt.Errorf("authentication required: connection_init payload must include an Authorization (or token) field")
 		}
 
-		userID, err := authctx.VerifyToken(ctx, jwksClient, token)
+		userID, role, err := authctx.VerifyToken(ctx, jwksClient, token)
 		if err != nil {
 			log.Debug("rejecting websocket connection: invalid token", zap.Error(err))
 			return transport.WithWebsocketCloseCode(ctx, closeCodeUnauthorized), nil,
 				fmt.Errorf("authentication required: invalid token")
 		}
 
-		return authctx.NewContext(ctx, userID), nil, nil
+		metrics.IncWebsocketConnections()
+		ctx = context.WithValue(ctx, wsCountedKey{}, true)
+		return authctx.NewContext(ctx, userID, role), nil, nil
+	}
+}
+
+type wsCountedKey struct{}
+
+func wsCloseFunc(metrics *telemetry.Metrics) transport.WebsocketCloseFunc {
+	return func(ctx context.Context, _ int) {
+		if counted, _ := ctx.Value(wsCountedKey{}).(bool); counted {
+			metrics.DecWebsocketConnections()
+		}
 	}
 }

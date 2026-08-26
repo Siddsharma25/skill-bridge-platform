@@ -14,9 +14,27 @@ type Credential struct {
 	ID           string    `gorm:"column:id;primaryKey"`
 	Email        string    `gorm:"column:email;uniqueIndex"`
 	PasswordHash string    `gorm:"column:password_hash"`
-	CreatedAt    time.Time `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt    time.Time `gorm:"column:updated_at;autoUpdateTime"`
+	// Role is RBAC's whole footprint on this table: "user" (every
+	// self-registered account) or "admin" (promoted out-of-band — see
+	// docs/DECISIONS.md's RBAC notes for why there's no self-service path
+	// to become one). Explicitly set to RoleUser on every insert
+	// (server.go's Register) rather than left to this column's DB-level
+	// DEFAULT — GORM sends every field's zero value in its INSERT
+	// statement, which would silently override a DB default with an
+	// empty string if this were left unset in Go.
+	Role      string    `gorm:"column:role"`
+	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt time.Time `gorm:"column:updated_at;autoUpdateTime"`
 }
+
+// RoleUser and RoleAdmin are the only two roles this codebase knows about
+// — a flat, fixed set rather than a separate roles table, since a
+// two-value enum has no need for the extra indirection a normalized
+// roles table would add at this project's scale (see docs/DECISIONS.md).
+const (
+	RoleUser  = "user"
+	RoleAdmin = "admin"
+)
 
 // TableName pins this model to the auth schema explicitly — GORM has no
 // concept of a default schema per model otherwise, and this project relies

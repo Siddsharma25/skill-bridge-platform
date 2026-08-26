@@ -2,6 +2,7 @@
 frontend/node_modules
 frontend/dist
 frontend/dist-ssr
+frontend/coverage
 *.local
 
 # --- Backend (Go) ---
@@ -15,6 +16,9 @@ backend/tmp/
 backend/notification-service/node_modules
 backend/notification-service/dist
 backend/notification-service/coverage
+
+# --- express-vs-fastify (standalone comparison, see its own README) ---
+backend/express-vs-fastify/node_modules
 
 # --- Env files (never commit secrets; .env.example files stay tracked) ---
 **/.env

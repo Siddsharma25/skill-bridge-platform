@@ -20,7 +20,7 @@ func TestSignAndVerify_RoundTrip(t *testing.T) {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
 
-	tokenStr, err := Sign(kp, "test-issuer", "user-123", "user@example.com", time.Minute)
+	tokenStr, err := Sign(kp, "test-issuer", "user-123", "user@example.com", "user", time.Minute)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}

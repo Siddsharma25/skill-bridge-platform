@@ -32,3 +32,15 @@ package realtime
 func UserChannel(userID string) string {
 	return "realtime:user:" + userID
 }
+
+// UserStreamKey returns the Redis Stream key a given user's notification
+// *history* is appended to and read back from — a separate Redis
+// primitive from UserChannel's pub/sub channel (see cache.Stream's doc
+// comment for why: pub/sub has no memory, a Stream does). Both this
+// package's Bridge (XADD, on every notification also published live) and
+// the notificationHistory GraphQL query resolver (XREVRANGE) call this,
+// same "one shared naming function, never drift out of sync" reasoning as
+// UserChannel.
+func UserStreamKey(userID string) string {
+	return "notifications:stream:" + userID
+}

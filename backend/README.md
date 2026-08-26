@@ -122,6 +122,19 @@ for local verification instead of real Supabase.
 outside that one process can reach them. Its own public port is `$PORT`
 (Render's convention, defaulting to 8080 locally), matching api-gateway's.
 
+api-gateway (and `cmd/allinone`) also serve `/metrics` — Prometheus-format
+counters/histograms for GraphQL request volume/latency/outcome and the
+live WebSocket connection count, on the same HTTP port as `/query`. See
+`internal/platform/telemetry` and `docs/DECISIONS.md`'s telemetry notes.
+
+## Observability stack (tracing, logs, metrics dashboard)
+
+```bash
+docker compose -f ../docker/docker-compose.observability.yml up -d
+```
+
+Brings up Jaeger (distributed tracing, UI at http://localhost:16686), Loki+Promtail (centralized logging — tails every service's `/tmp/*.log` file from local-dev verification runs), Prometheus (scrapes api-gateway's `/metrics`), and Grafana (http://localhost:3300, anonymous admin, all three pre-provisioned as datasources). Set `OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317` on `api-gateway`/`allinone`/`skills-service` (or any other service you've instrumented) to start sending traces — see `internal/platform/tracing` and `docs/DECISIONS.md`'s tracing/logging notes for the full design and how this was verified.
+
 ## Deploying
 
 Production runs `cmd/allinone`, not the five services above — see the

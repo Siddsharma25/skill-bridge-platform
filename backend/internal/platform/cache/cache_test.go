@@ -38,6 +38,10 @@ func TestNewFromEnv_NoURLDisablesEverything(t *testing.T) {
 	if sub, ok := c.Subscribe(ctx, "chan"); ok || sub != nil {
 		t.Errorf("expected Subscribe to report unavailable (nil, false) when disabled, got (%v, %v)", sub, ok)
 	}
+	c.AppendNotification(ctx, "stream-key", "payload")
+	if payloads, ok := c.RecentNotifications(ctx, "stream-key", 10); ok || payloads != nil {
+		t.Errorf("expected RecentNotifications to report unavailable (nil, false) when disabled, got (%v, %v)", payloads, ok)
+	}
 	if err := c.Close(); err != nil {
 		t.Errorf("expected Close on a disabled Client to be a safe no-op, got %v", err)
 	}
@@ -55,10 +59,13 @@ func TestNewFromEnv_UnparseableURLDisablesEverything(t *testing.T) {
 	}
 }
 
-// PubSub and Subscription are satisfied by *Client at compile time — this
-// is what lets internal/gateway/realtime and the onNotification resolver
-// depend on the narrow interfaces instead of a concrete *Client, and a
-// test double satisfy them too.
+// PubSub, Stream, and RealtimeStore are satisfied by *Client at compile
+// time — this is what lets internal/gateway/realtime and the
+// onNotification/notificationHistory resolvers depend on the narrow
+// interfaces instead of a concrete *Client, and a test double satisfy
+// them too.
 var (
-	_ PubSub = (*Client)(nil)
+	_ PubSub        = (*Client)(nil)
+	_ Stream        = (*Client)(nil)
+	_ RealtimeStore = (*Client)(nil)
 )

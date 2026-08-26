@@ -26,13 +26,18 @@ import (
 // subscribes directly to Redis pub/sub rather than through a backend
 // service, since api-gateway's own RabbitMQ-consuming realtime bridge
 // (internal/gateway/realtime) is what publishes onto it — see
-// docs/DECISIONS.md. May be a disabled *cache.Client (REDIS_URL unset) —
-// Subscribe then reports unavailable rather than panicking, same
-// degrade-gracefully convention as every other optional dependency here.
+// docs/DECISIONS.md. Typed as the combined cache.RealtimeStore (not just
+// cache.PubSub) so the same field also backs notificationHistory's
+// Redis-Stream read (XREVRANGE) — one Redis dependency for everything
+// this resolver layer needs beyond a backend gRPC call, not two separate
+// fields for what's the same *cache.Client underneath. May be a disabled
+// *cache.Client (REDIS_URL unset) — every method then reports unavailable
+// rather than panicking, same degrade-gracefully convention as every
+// other optional dependency here.
 type Resolver struct {
 	AuthClient   authv1.AuthServiceClient
 	SkillsClient skillsv1.SkillsServiceClient
 	UsersClient  usersv1.UsersServiceClient
 	JobsClient   jobsv1.JobsServiceClient
-	Realtime     cache.PubSub
+	Realtime     cache.RealtimeStore
 }

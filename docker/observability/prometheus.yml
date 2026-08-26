@@ -1,0 +1,16 @@
+# Scrapes api-gateway's /metrics endpoint (internal/platform/telemetry) —
+# host.docker.internal is Docker Desktop's built-in DNS name for the host
+# machine, reachable from inside a container without any extra network
+# config. Not part of docker-compose.infra.yml/docker-compose.yml on
+# purpose: those bring up this project's actual application services;
+# this file (docker-compose.observability.yml) brings up the tools that
+# *observe* them, a genuinely separate concern kept in its own compose
+# file — see that file's own comment.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: api-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8080"]

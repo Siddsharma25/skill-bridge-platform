@@ -12,12 +12,13 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 )
 
-// fakePubSub is an in-memory stand-in for cache.PubSub — same reasoning as
-// every other fake in this codebase's tests (fakePublisher, fakeMatchStore,
-// ...): lets a test assert exactly what was published/subscribed without a
-// real Redis instance.
-type fakePubSub struct {
+// fakeRealtimeStore is an in-memory stand-in for cache.RealtimeStore —
+// same reasoning as every other fake in this codebase's tests
+// (fakePublisher, fakeMatchStore, ...): lets a test assert exactly what
+// was published/appended/subscribed without a real Redis instance.
+type fakeRealtimeStore struct {
 	published []publishCall
+	appended  []appendCall
 }
 
 type publishCall struct {
@@ -25,16 +26,29 @@ type publishCall struct {
 	message string
 }
 
-func (f *fakePubSub) Publish(_ context.Context, channel, message string) {
+type appendCall struct {
+	key     string
+	payload string
+}
+
+func (f *fakeRealtimeStore) Publish(_ context.Context, channel, message string) {
 	f.published = append(f.published, publishCall{channel: channel, message: message})
 }
 
-func (f *fakePubSub) Subscribe(_ context.Context, _ string) (cache.Subscription, bool) {
+func (f *fakeRealtimeStore) Subscribe(_ context.Context, _ string) (cache.Subscription, bool) {
+	return nil, false
+}
+
+func (f *fakeRealtimeStore) AppendNotification(_ context.Context, key, payload string) {
+	f.appended = append(f.appended, appendCall{key: key, payload: payload})
+}
+
+func (f *fakeRealtimeStore) RecentNotifications(_ context.Context, _ string, _ int64) ([]string, bool) {
 	return nil, false
 }
 
 func TestBridgeHandler_RepublishesToUserChannel(t *testing.T) {
-	ps := &fakePubSub{}
+	ps := &fakeRealtimeStore{}
 	bridge := NewBridge(ps, zap.NewNop())
 	handler := bridge.Handler()
 
@@ -64,10 +78,21 @@ func TestBridgeHandler_RepublishesToUserChannel(t *testing.T) {
 	if got.UserID != "user-123" || got.JobID != "job-1" {
 		t.Errorf("republished payload lost fields: %+v", got)
 	}
+
+	if len(ps.appended) != 1 {
+		t.Fatalf("expected exactly 1 stream append, got %d", len(ps.appended))
+	}
+	if want := UserStreamKey("user-123"); ps.appended[0].key != want {
+		t.Errorf("expected stream key %q, got %q", want, ps.appended[0].key)
+	}
+	if ps.appended[0].payload != ps.published[0].message {
+		t.Errorf("stream append payload should match the pub/sub message verbatim: %q vs %q",
+			ps.appended[0].payload, ps.published[0].message)
+	}
 }
 
 func TestBridgeHandler_MalformedPayloadIsDroppedNotErrored(t *testing.T) {
-	ps := &fakePubSub{}
+	ps := &fakeRealtimeStore{}
 	bridge := NewBridge(ps, zap.NewNop())
 	handler := bridge.Handler()
 
@@ -80,7 +105,7 @@ func TestBridgeHandler_MalformedPayloadIsDroppedNotErrored(t *testing.T) {
 }
 
 func TestBridgeHandler_MissingUserIDIsDroppedNotErrored(t *testing.T) {
-	ps := &fakePubSub{}
+	ps := &fakeRealtimeStore{}
 	bridge := NewBridge(ps, zap.NewNop())
 	handler := bridge.Handler()
 
@@ -98,5 +123,11 @@ func TestBridgeHandler_MissingUserIDIsDroppedNotErrored(t *testing.T) {
 func TestUserChannel_Format(t *testing.T) {
 	if got, want := UserChannel("abc-123"), "realtime:user:abc-123"; got != want {
 		t.Errorf("UserChannel(%q) = %q, want %q", "abc-123", got, want)
+	}
+}
+
+func TestUserStreamKey_Format(t *testing.T) {
+	if got, want := UserStreamKey("abc-123"), "notifications:stream:abc-123"; got != want {
+		t.Errorf("UserStreamKey(%q) = %q, want %q", "abc-123", got, want)
 	}
 }

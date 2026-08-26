@@ -1,0 +1,75 @@
+# This project's observability stack — Jaeger (distributed tracing),
+# Loki+Promtail (centralized logging), Prometheus (metrics scraping,
+# feeding on api-gateway's /metrics — see internal/platform/telemetry),
+# and Grafana (one dashboard over all three). Deliberately its own
+# compose file, not folded into docker-compose.infra.yml/docker-compose.yml:
+# those bring up this project's actual application dependencies
+# (Kafka/RabbitMQ/Redis, then the 6 app services); this brings up the
+# tools that *observe* those services running elsewhere (as bare host
+# processes in local dev — see docs/RUNNING_LOCALLY.md — or as containers
+# in a real deployment), a genuinely separate concern that shouldn't have
+# to come up/down in lockstep with the app itself.
+#
+# Bring up: docker compose -f docker/docker-compose.observability.yml up -d
+# Then set OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 on api-gateway/
+# allinone (see internal/platform/tracing) to start sending traces here.
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: sbp-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # UI + query API (this is what docs/DECISIONS.md's verification queries)
+      - "4317:4317" # OTLP gRPC — what internal/platform/tracing exports to
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: sbp-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: sbp-promtail
+    volumes:
+      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      # /tmp is where this project's own local-dev verification passes
+      # have redirected every service's stdout (see
+      # docs/RUNNING_LOCALLY.md) — mounted read-only, Promtail only reads.
+      - /tmp:/hostlogs:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: sbp-prometheus
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: sbp-grafana
+    ports:
+      - "3300:3000"
+    volumes:
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    environment:
+      # Anonymous admin access — this is a local-only, throwaway dev
+      # dashboard (see this file's own comment); no real credential is
+      # worth the friction of a login screen here.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    depends_on:
+      - loki
+      - jaeger
+      - prometheus
+    restart: unless-stopped

@@ -178,7 +178,7 @@ func TestRateLimitKey_PrefersUserIDOverIP(t *testing.T) {
 		r := httptest.NewRequest(http.MethodPost, "/query", nil)
 		r.RemoteAddr = remoteAddr
 		if userID != "" {
-			r = r.WithContext(authctx.NewContext(r.Context(), userID))
+			r = r.WithContext(authctx.NewContext(r.Context(), userID, "user"))
 		}
 		return r
 	}
