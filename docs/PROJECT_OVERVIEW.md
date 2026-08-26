@@ -19,14 +19,14 @@ It's built as a hands-on learning vehicle first and a product second: every arch
 
 - **No real email is ever sent.** The "welcome email" flow logs what it would have sent and records it in a database table — this project deliberately doesn't integrate a real email provider, since that's incidental to the messaging/NestJS practice it's there for.
 - **The matching algorithm is simple skill-overlap scoring, not ML.** Sophisticated matching isn't the point of this project.
-- **There's no concept of roles yet** — anyone can post a job or add a skill, authenticated or not. A real product would need employer/candidate/admin roles; this project deliberately hasn't built that yet (see `docs/SECURITY.md`).
+- **RBAC exists, but narrowly** — `admin` and `user` roles exist, and adding a new skill to the taxonomy requires being an admin. Posting a job is still open to anyone, authenticated or not. A real product would need broader employer/candidate/admin roles with per-resource ownership; this is a real, working example of the mechanism, not the full thing (see `docs/DECISIONS.md`'s RBAC notes and `docs/SECURITY.md`).
 
 ## How to actually use it right now
 
 **There's a real UI for the full feature set now** — `frontend/` has register/login/profile pages, skill browsing/creation, job posting/browsing/matching, and a live notification bell, all wired to the live GraphQL API (see `frontend/README.md`). Google OAuth is the one flow still API-only. Everything below is also directly reachable via the GraphQL API (a GraphQL client, `curl`, or the Playground the gateway serves in dev), useful if you want to script something or don't want to run the frontend:
 
 - `register(email, password)` / `login(email, password)` / `googleAuthUrl` + `googleOAuthCallback(code)` — mutations (`register`/`login` have a frontend UI; Google OAuth doesn't yet)
-- `skills` (query, list) / `createSkill(name, category)` (mutation) — both have a frontend UI (`/skills`)
+- `skills` (query, list) / `createSkill(name, category)` (mutation, requires an admin bearer token — RBAC) — both have a frontend UI (`/skills`)
 - `jobs` (query, list) / `job(id)` (query) / `createJob(title, description, requiredSkillIds)` (mutation) — `Job.requiredSkills` and `Job.matches` resolve automatically; all have a frontend UI (`/jobs`, `/jobs/:id`, `/jobs/new`)
 - `myProfile` (query, requires auth) / `updateProfile(displayName, bio)` / `addUserSkill(skillId, proficiency)` — mutations, all require a valid bearer token from `login`; `myProfile` and `addUserSkill` have a frontend UI (`updateProfile` doesn't yet)
 - `onNotification` — a GraphQL subscription over WebSocket, requires a valid token; pushes a live message when you get matched to a job. Has a frontend UI (the header's notification bell)
@@ -35,4 +35,4 @@ See `backend/cmd/api-gateway/README.md` for the exact schema and `docs/DECISIONS
 
 ## Where this is headed (not yet built)
 
-A Google OAuth UI and an `updateProfile` form (both API-only today — see `frontend/README.md`'s Known gaps), an authorization/role system, refresh-token rotation, and — per `docs/DEPLOYMENT.md` — a live deployment once the necessary third-party accounts (Supabase, Render, Vercel) exist.
+A Google OAuth UI and an `updateProfile` form (both API-only today — see `frontend/README.md`'s Known gaps), broader RBAC (per-resource ownership, more than one gated operation), refresh-token rotation, and — per `docs/DEPLOYMENT.md` — a live deployment once the necessary third-party accounts (Supabase, Render, Vercel) exist.

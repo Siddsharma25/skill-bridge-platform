@@ -12,6 +12,7 @@ Every way to bring this project up, in order from "fastest inner loop" to "close
 | Prove the whole thing works from a clean checkout, containerized | [Full stack via Docker](#full-stack-via-docker) |
 | Practice Kubernetes | [Local Kubernetes (kind)](#local-kubernetes-kind) |
 | Practice Jenkins | [Local Jenkins](#local-jenkins) |
+| See distributed tracing/logs/metrics in one dashboard | [Observability stack](#observability-stack) |
 
 ## Prerequisites
 
@@ -116,3 +117,15 @@ docker compose -f jenkins/docker-compose.jenkins.yml up -d --build
 # (exact curl commands in jenkins/README.md).
 docker compose -f jenkins/docker-compose.jenkins.yml down -v   # tear down when done
 ```
+
+## Observability stack
+
+Jaeger (distributed tracing), Loki+Promtail (centralized logging), Prometheus (metrics), and Grafana (one dashboard over all three) — see `backend/README.md`'s own section and `docs/DECISIONS.md`'s tracing/logging notes for the full design and how it was verified.
+
+```bash
+docker compose -f docker/docker-compose.observability.yml up -d
+# Then run api-gateway (and any other instrumented service, e.g. skills-service)
+# with OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 to start sending traces.
+```
+
+Jaeger UI: http://localhost:16686 · Grafana: http://localhost:3300 (anonymous admin, Prometheus/Loki/Jaeger pre-provisioned as datasources) · Prometheus: http://localhost:9090.
