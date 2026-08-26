@@ -10,6 +10,7 @@ import { SkillsPage } from "@/features/skills/SkillsPage";
 import { JobsPage } from "@/features/jobs/JobsPage";
 import { JobDetailPage } from "@/features/jobs/JobDetailPage";
 import { NewJobPage } from "@/features/jobs/NewJobPage";
+import { ReduxExamplePage } from "@/features/redux-example/ReduxExamplePage";
 
 const queryClient = new QueryClient();
 
@@ -26,6 +27,7 @@ function App() {
             <Route path="/jobs" element={<JobsPage />} />
             <Route path="/jobs/new" element={<NewJobPage />} />
             <Route path="/jobs/:id" element={<JobDetailPage />} />
+            <Route path="/redux-example" element={<ReduxExamplePage />} />
             <Route element={<ProtectedRoute />}>
               <Route path="/profile" element={<ProfilePage />} />
             </Route>

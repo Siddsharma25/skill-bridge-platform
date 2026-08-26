@@ -86,3 +86,26 @@ export async function addUserSkill(
   );
   return data.addUserSkill;
 }
+
+const UPDATE_PROFILE_MUTATION = /* GraphQL */ `
+  mutation UpdateProfile($displayName: String, $bio: String) {
+    updateProfile(displayName: $displayName, bio: $bio) {
+      userId
+      displayName
+      bio
+    }
+  }
+`;
+
+export async function updateProfile(
+  token: string,
+  displayName: string,
+  bio: string,
+): Promise<Profile> {
+  const data = await gqlRequest<{ updateProfile: Profile }>(
+    UPDATE_PROFILE_MUTATION,
+    { displayName, bio },
+    token,
+  );
+  return data.updateProfile;
+}

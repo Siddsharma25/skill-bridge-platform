@@ -31,7 +31,14 @@ export async function fetchSkills(): Promise<Skill[]> {
   return data.skills;
 }
 
-export async function createSkill(name: string, category: string): Promise<Skill> {
-  const data = await gqlRequest<{ createSkill: Skill }>(CREATE_SKILL_MUTATION, { name, category });
+// createSkill requires an admin bearer token (RBAC — see
+// docs/DECISIONS.md); token is required here, not optional, since an
+// unauthenticated call is guaranteed to fail server-side regardless.
+export async function createSkill(token: string, name: string, category: string): Promise<Skill> {
+  const data = await gqlRequest<{ createSkill: Skill }>(
+    CREATE_SKILL_MUTATION,
+    { name, category },
+    token,
+  );
   return data.createSkill;
 }

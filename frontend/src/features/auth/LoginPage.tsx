@@ -2,7 +2,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,9 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { login as loginRequest } from "@/features/auth/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { GraphQLError } from "@/lib/graphql-client";
-import { decodeJwtSubject } from "@/lib/jwt";
+import { decodeJwtSubject, decodeJwtRole } from "@/lib/jwt";
+import { gradientButton } from "@/lib/utils";
+import { LogIn } from "lucide-react";
 
 const schema = z.object({
   email: z.string().email("Enter a valid email"),
@@ -22,6 +24,7 @@ type FormValues = z.infer<typeof schema>;
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const setAuth = useAuthStore((s) => s.setAuth);
 
   const form = useForm<FormValues>({
@@ -35,15 +38,23 @@ export function LoginPage() {
       // login's AuthPayload.userId always comes back empty by design — the
       // gateway expects the client to decode it from the token itself (see
       // schema.resolvers.go's Login resolver).
-      setAuth(data.accessToken, decodeJwtSubject(data.accessToken));
+      setAuth(data.accessToken, decodeJwtSubject(data.accessToken), decodeJwtRole(data.accessToken));
+      // Clears any cached error from a previous session (e.g. a
+      // myProfile query that failed under a since-expired token) so a
+      // fresh login always starts from a clean slate instead of
+      // possibly re-showing stale cached state.
+      queryClient.clear();
       navigate("/profile", { replace: true });
     },
   });
 
   return (
     <div className="flex min-h-svh items-center justify-center p-8">
-      <Card className="w-full max-w-sm">
+      <Card className="animate-in-up w-full max-w-sm shadow-lg">
         <CardHeader>
+          <div className="mb-1 flex size-11 items-center justify-center rounded-full bg-gradient-to-br from-fuchsia-500 via-violet-500 to-sky-500 shadow-md shadow-violet-500/30">
+            <LogIn className="size-5 text-white" />
+          </div>
           <CardTitle>Log in</CardTitle>
           <CardDescription>Welcome back.</CardDescription>
         </CardHeader>
@@ -51,6 +62,7 @@ export function LoginPage() {
           <Form {...form}>
             <form
               className="grid gap-4"
+              noValidate
               onSubmit={form.handleSubmit((values) => mutation.mutate(values))}
             >
               <FormField
@@ -86,7 +98,7 @@ export function LoginPage() {
                     : "Something went wrong. Try again."}
                 </p>
               )}
-              <Button type="submit" disabled={mutation.isPending}>
+              <Button type="submit" disabled={mutation.isPending} className={gradientButton}>
                 {mutation.isPending ? "Logging in..." : "Log in"}
               </Button>
             </form>
