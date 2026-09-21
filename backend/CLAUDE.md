@@ -67,9 +67,14 @@ Follow the pattern `auth-service` established:
    `godotenv.Load()` gated on `ENV != "production"`, connect DB via
    `internal/platform/db` without failing hard on error (log a warning,
    keep `*gorm.DB` nil, let handlers return `Unavailable`), wire
-   `internal/platform/{logger,requestid,health,shutdown}`, register the
-   gRPC service + health + reflection, serve gRPC and HTTP on separate
-   ports, `shutdown.Wait(...)` at the end.
+   `internal/platform/{logger,requestid,health,shutdown,sentry}` — Sentry
+   specifically: `sentryplat.InitFromEnv(os.Getenv, "<service>", log)` right
+   after building `log`, `defer sentryHandle.Flush(2 * time.Second)`,
+   `log = log.WithOptions(zap.WrapCore(sentryHandle.WrapCore))`, and add
+   `sentryHandle.UnaryServerInterceptor()` to the gRPC server's
+   `ChainUnaryInterceptor(...)` call — register the gRPC service + health +
+   reflection, serve gRPC and HTTP on separate ports, `shutdown.Wait(...)`
+   at the end.
 5. `Dockerfile.<service>` — copy `Dockerfile.auth-service`, swap the
    `cmd/` path and `EXPOSE` ports.
 6. A short `cmd/<service>/README.md` — what it does, why it's built this

@@ -25,6 +25,7 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
+	sentryplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/sentry"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
 )
 
@@ -43,6 +44,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = log.Sync() }()
+
+	// Sentry (error tracking + log capture): degrades gracefully, same
+	// pattern as every other optional dependency in this file. See
+	// internal/platform/sentry and docs/DECISIONS.md's Sentry section.
+	sentryHandle := sentryplat.InitFromEnv(os.Getenv, "auth-service", log)
+	defer sentryHandle.Flush(2 * time.Second)
+	log = log.WithOptions(zap.WrapCore(sentryHandle.WrapCore))
 
 	grpcPort := envOr("PORT", "9001")
 	httpPort := envOr("HTTP_PORT", "8081")
@@ -102,7 +110,7 @@ func main() {
 	authServer := auth.NewServer(gormDB, keyPair, issuer, googleExchanger, rabbitProducer, log)
 
 	grpcServer := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),
+		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor(), sentryHandle.UnaryServerInterceptor()),
 	)
 	authv1.RegisterAuthServiceServer(grpcServer, authServer)
 	health.NewGRPCServer(grpcServer)

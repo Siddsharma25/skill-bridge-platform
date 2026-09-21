@@ -44,6 +44,7 @@ Every document in this repo, organized by what you're trying to do. Start with t
 
 - [`jenkins/README.md`](../jenkins/README.md) — the local, build-only Jenkins pipeline: what it proves, how to bring it up, why it gates nothing real.
 - `k8s/` and `docker/` don't have their own top-level READMEs — their reasoning lives in `docs/DECISIONS.md`'s Phase 4 and Phase 5 sections respectively.
+- [`infra/aws/keepalive-lambda/README.md`](../infra/aws/keepalive-lambda/README.md) — a CloudFormation + Lambda + CloudWatch stack that pings the deployed backend's `/readyz` every 10 minutes to keep Render and Supabase's free tiers warm. Unlike the rest of this section, this one **does** affect real production behavior if deployed — see the README for the distinction, and `docs/DEPLOYMENT.md` for the deploy checklist.
 
 ## Frontend (`frontend/`)
 

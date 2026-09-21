@@ -52,6 +52,7 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
+	sentryplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/sentry"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/telemetry"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/tracing"
@@ -69,6 +70,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = log.Sync() }()
+
+	// Sentry (error tracking + log capture): degrades gracefully, same
+	// pattern as every other optional dependency in this file. See
+	// internal/platform/sentry and docs/DECISIONS.md's Sentry section.
+	sentryHandle := sentryplat.InitFromEnv(os.Getenv, "api-gateway", log)
+	defer sentryHandle.Flush(2 * time.Second)
+	log = log.WithOptions(zap.WrapCore(sentryHandle.WrapCore))
 
 	// Distributed tracing: see internal/platform/tracing's package doc
 	// comment for why this is a separate concern from the Prometheus
@@ -363,12 +371,14 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr: ":" + httpPort,
-		// cors.Middleware wraps the whole mux (health checks included, not
-		// just /query) — it's a no-op for any request with no Origin
-		// header (same-origin, curl, grpcurl-style debugging), so wrapping
-		// broadly costs nothing and means a future route added to mux
-		// doesn't need to remember to opt in separately.
-		Handler:           cors.Middleware(allowedOrigins, log)(mux),
+		// sentryHandle.RecoverMiddleware is outermost so it sees (and
+		// reports) a panic from anywhere inside, including cors.Middleware
+		// itself, not just mux/srv. cors.Middleware wraps the whole mux
+		// (health checks included, not just /query) — it's a no-op for any
+		// request with no Origin header (same-origin, curl, grpcurl-style
+		// debugging), so wrapping broadly costs nothing and means a future
+		// route added to mux doesn't need to remember to opt in separately.
+		Handler:           sentryHandle.RecoverMiddleware(cors.Middleware(allowedOrigins, log)(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

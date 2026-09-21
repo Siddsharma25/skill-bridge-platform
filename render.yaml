@@ -95,6 +95,24 @@ services:
       - key: GOOGLE_OAUTH_REDIRECT_URL
         sync: false
 
+      # --- Sentry (optional — the one thing closing production's error-visibility gap) ---
+      # See internal/platform/sentry and docs/DECISIONS.md's Sentry
+      # section. Degrades gracefully like everything else here: unset
+      # means allinone still starts and runs exactly as before, just with
+      # no error reporting. Get a DSN from a free Sentry account/project
+      # (see docs/DEPLOYMENT.md) and set it here once you want production
+      # crashes/errors actually visible somewhere instead of only
+      # discoverable via a user report.
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_ENVIRONMENT
+        value: production
+      # Opt-in performance tracing — left unset (0, off) by default to stay
+      # safely inside Sentry's free-tier performance-unit quota; uncomment
+      # and set a value like "0.1" only if you specifically want it.
+      # - key: SENTRY_TRACES_SAMPLE_RATE
+      #   value: "0.1"
+
       # --- Redis (optional — deliberately NOT provisioned by this Blueprint) ---
       # Left unset by default: the plan's Phase 7 bullet calls for rate
       # limiting and pub/sub to "degrade gracefully to in-process behavior

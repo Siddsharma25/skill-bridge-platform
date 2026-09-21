@@ -129,3 +129,7 @@ docker compose -f docker/docker-compose.observability.yml up -d
 ```
 
 Jaeger UI: http://localhost:16686 · Grafana: http://localhost:3300 (anonymous admin, Prometheus/Loki/Jaeger pre-provisioned as datasources) · Prometheus: http://localhost:9090.
+
+## Sentry (error tracking — works locally too, and is the one piece of the above that also runs in production)
+
+Unlike the observability stack above, Sentry isn't a container to bring up — it's a real (free) hosted account. Set `SENTRY_DSN` in `backend/.env` (any/every service) and `VITE_SENTRY_DSN` in `frontend/.env.local`, and errors/logs from that run start flowing to your Sentry project, no other setup needed. See `docs/DEPLOYMENT.md`'s optional step 6 for creating the account, and `docs/DECISIONS.md`'s Sentry section for the design — every service still starts and runs identically with these unset, same degrade-gracefully convention as everything else on this page.

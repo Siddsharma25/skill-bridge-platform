@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import * as Sentry from '@sentry/node';
 import type { ConsumeMessage } from 'amqplib';
 import { RabbitmqConnectionService } from './rabbitmq-connection.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -26,6 +27,12 @@ import {
  * learning project's local broker, not a production SLA, and a second
  * retry queue is real complexity for a case documented in the Scope Cuts
  * as an at-least-once/idempotent-consumer world already).
+ *
+ * Both real failure paths (a malformed message, an unexpected processing
+ * error) also report to Sentry, not just the pino log line — see main.ts
+ * and docs/DECISIONS.md's Sentry section for why: this service's only
+ * HTTP surface is health checks, so nothing else here would ever surface
+ * a bug in this service's own code.
  */
 @Injectable()
 export class RabbitmqConsumer implements OnModuleInit {
@@ -74,6 +81,12 @@ export class RabbitmqConsumer implements OnModuleInit {
             { err },
             'unexpected error handling notifications.email message; message left unacked',
           );
+          // This service's HTTP surface is health-checks only (see
+          // main.ts), so there's no request-layer Sentry instrumentation
+          // that would ever see this — this is the one place this
+          // service's own bugs would otherwise be silent beyond the log
+          // line above. No-op if SENTRY_DSN isn't set (see main.ts).
+          Sentry.captureException(err);
         });
       },
       { noAck: false },
@@ -125,6 +138,10 @@ export class RabbitmqConsumer implements OnModuleInit {
           { err: err.message, raw: msg.content.toString('utf8').slice(0, 500) },
           `malformed ${QUEUE_NOTIFICATIONS_EMAIL} message; routing to DLQ`,
         );
+        // A malformed message means some publisher upstream is producing
+        // bad payloads — worth surfacing on its own, not just visible as
+        // a growing DLQ depth someone has to think to go check.
+        Sentry.captureException(err);
         channel.nack(msg, false, false);
         return;
       }

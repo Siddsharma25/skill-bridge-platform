@@ -1,7 +1,35 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger } from 'nestjs-pino';
+import * as Sentry from '@sentry/node';
 import { AppModule } from './app.module';
-import { envOr } from './config/env';
+import { env, envOr } from './config/env';
+
+// Sentry (error tracking + log capture) — this service's half of this
+// repo's one Sentry integration; see backend/internal/platform/sentry (the
+// Go side) and docs/DECISIONS.md's Sentry section. Called before
+// NestFactory.create so a crash during module construction itself is
+// still reportable, not just errors inside a running request/consumer.
+// Same degrade-gracefully convention as every other optional dependency
+// in this service (see rabbitmq-connection.service.ts): no SENTRY_DSN
+// means this is a no-op, not a startup failure.
+//
+// Only local/kind value today, not production — this service isn't part
+// of render.yaml's deploy (see cmd/allinone/main.go's package doc comment:
+// notification-service is deliberately excluded from production). Wired
+// in anyway per this repo's stated rule that internal/platform-equivalent
+// behavior isn't optional per-service boilerplate to skip.
+function initSentry(): void {
+  const dsn = env('SENTRY_DSN');
+  if (!dsn) {
+    return;
+  }
+  Sentry.init({
+    dsn,
+    environment: envOr('SENTRY_ENVIRONMENT', 'development'),
+    serverName: 'notification-service',
+    tracesSampleRate: Number(envOr('SENTRY_TRACES_SAMPLE_RATE', '0')) || 0,
+  });
+}
 
 async function bootstrap() {
   const env = process.env.ENV;
@@ -11,6 +39,8 @@ async function bootstrap() {
     // doesn't exist, which is expected in CI and in production.
     await import('dotenv').then((dotenv) => dotenv.config());
   }
+
+  initSentry();
 
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.useLogger(app.get(Logger));

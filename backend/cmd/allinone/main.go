@@ -116,6 +116,7 @@ import (
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/rabbitmq"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
+	sentryplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/sentry"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/telemetry"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/tracing"
@@ -172,6 +173,18 @@ func main() {
 	}
 	defer func() { _ = log.Sync() }()
 
+	// Sentry (error tracking + log capture): this is the one process that
+	// actually matters for closing production's real observability gap —
+	// see internal/platform/sentry and docs/DECISIONS.md's Sentry section.
+	// One Handle covers every embedded service below (auth, skills, users,
+	// jobs, gateway); "service" is tagged "allinone" rather than one of
+	// the four, since a panic anywhere in this single process is this
+	// deployment's whole story. Degrades gracefully, same pattern as
+	// every other optional dependency here.
+	sentryHandle := sentryplat.InitFromEnv(os.Getenv, "allinone", log)
+	defer sentryHandle.Flush(2 * time.Second)
+	log = log.WithOptions(zap.WrapCore(sentryHandle.WrapCore))
+
 	// Distributed tracing — see cmd/api-gateway/main.go's identical block
 	// and internal/platform/tracing's package doc comment. Degrades to a
 	// no-op tracer if OTEL_EXPORTER_OTLP_ENDPOINT is unset.
@@ -214,7 +227,7 @@ func main() {
 
 	authServer := auth.NewServer(authDB, keyPair, issuer, googleExchanger, authRabbitProducer, log)
 
-	authGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
+	authGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor(), sentryHandle.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	authv1.RegisterAuthServiceServer(authGRPCServer, authServer)
 	health.NewGRPCServer(authGRPCServer)
 	reflection.Register(authGRPCServer)
@@ -235,7 +248,7 @@ func main() {
 
 	skillsServer := skills.NewServer(skillsDB, skillsCache, skillsKafkaProducer, log)
 
-	skillsGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
+	skillsGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor(), sentryHandle.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	skillsv1.RegisterSkillsServiceServer(skillsGRPCServer, skillsServer)
 	health.NewGRPCServer(skillsGRPCServer)
 	reflection.Register(skillsGRPCServer)
@@ -254,7 +267,7 @@ func main() {
 
 	usersServer := users.NewServer(usersDB, usersKafkaProducer, log)
 
-	usersGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
+	usersGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor(), sentryHandle.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	usersv1.RegisterUsersServiceServer(usersGRPCServer, usersServer)
 	health.NewGRPCServer(usersGRPCServer)
 	reflection.Register(usersGRPCServer)
@@ -280,7 +293,7 @@ func main() {
 
 	jobsServer := jobs.NewServer(jobsDB, jobsCache, jobsKafkaProducer, log)
 
-	jobsGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
+	jobsGRPCServer := grpc.NewServer(grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor(), sentryHandle.UnaryServerInterceptor()), grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	jobsv1.RegisterJobsServiceServer(jobsGRPCServer, jobsServer)
 	health.NewGRPCServer(jobsGRPCServer)
 	reflection.Register(jobsGRPCServer)
@@ -447,8 +460,10 @@ func main() {
 	}
 
 	publicHTTPServer := &http.Server{
-		Addr:              ":" + publicPort,
-		Handler:           cors.Middleware(allowedOrigins, log)(mux),
+		Addr: ":" + publicPort,
+		// sentryHandle.RecoverMiddleware outermost — see
+		// cmd/api-gateway/main.go's identical composition for why.
+		Handler:           sentryHandle.RecoverMiddleware(cors.Middleware(allowedOrigins, log)(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

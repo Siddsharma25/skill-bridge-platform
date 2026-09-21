@@ -38,6 +38,16 @@ What's actually in place, verified against the code (not aspirational) — and w
 
 - Every `.env` file is gitignored (`**/.env` at the repo root covers every service's, including ones that don't exist yet) — only `.env.example` files with placeholder values are tracked.
 - Nothing found committed that looks like a real credential (checked during this review).
+- **`SENTRY_AUTH_TOKEN`** (frontend build-time source map upload, `frontend/vite.config.ts`) is deliberately never `VITE_`-prefixed — a `VITE_`-prefixed var gets inlined into the shipped browser bundle by Vite; this one is read only in Vite's Node-side config process and never reaches the client.
+
+## Error tracking (Sentry) — what does and doesn't leave this app
+
+Added to close a real gap: production (`cmd/allinone` on Render, the frontend on Vercel) had zero error visibility before this — the Prometheus/Loki/Jaeger stack is local/`kind`-only (see `docs/ARCHITECTURE.md`). See `docs/DECISIONS.md`'s Sentry section for the full design.
+
+- **Request/response bodies are never captured, on either side.** Verified by reading `sentry-go`'s own `data_collection.go` rather than assumed: its default is to collect *every* HTTP body type verbatim unless told otherwise. `internal/platform/sentry.InitFromEnv` explicitly sets `DataCollection.HTTPBodies` to an empty (not nil) slice — this app's `register`/`login` GraphQL mutations carry a plaintext password in the POST body, so this isn't optional. The frontend SDK doesn't have an equivalent built-in body-scrubbing default, so `src/lib/sentry.ts`'s `beforeSend` strips `event.request.data` unconditionally as the same protection.
+- **Headers, cookies, and query params** are covered by `sentry-go`'s built-in case-insensitive denylist (`auth`, `bearer`, `token`, `password`, `secret`, `session`, ... — see `data_collection_filter.go`), which redacts the `Authorization` header this app's bearer-token auth relies on. Not separately configured; this is the SDK's documented default, confirmed by reading the source rather than assumed.
+- **A real reliability bug was found and fixed while wiring this in, not just an observability addition**: grpc-go does not recover a panicking handler on its own, and nothing in this codebase's gRPC server chain did either (only gqlgen's generated GraphQL layer has its own separate recovery) — a panic in any gRPC handler crashed the whole process, which in `cmd/allinone` specifically means all four backend services and the gateway at once. `sentry.Handle.UnaryServerInterceptor()` now recovers unconditionally (even with no `SENTRY_DSN` set) and converts the panic to a `codes.Internal` gRPC status instead.
+- **The Lambda execution role** for the AWS keep-alive stack (`infra/aws/keepalive-lambda/template.yaml`) is scoped to exactly `logs:CreateLogStream`/`logs:PutLogEvents` on its one log group's ARN — no wildcard resource, no managed `AWSLambdaBasicExecutionRole`.
 
 ## What a production deployment still needs before this is more than a learning build
 

@@ -40,6 +40,33 @@ Production is a deliberately different, much simpler shape than the local/kind l
 - Create a Google Cloud OAuth client (Web application type). It needs a **stable domain** — not a Vercel preview URL, which changes per-deploy and won't work as a registered redirect URI.
 - Set `GOOGLE_OAUTH_REDIRECT_URL` on Render to the deployed frontend's callback route.
 
+## 6. Optional: Sentry (error tracking + log capture, frontend + backend)
+
+- Closes a real gap: without this, a crash in the deployed backend or a frontend render error has no signal beyond a user report — the local Prometheus/Loki/Jaeger stack (`docker/docker-compose.observability.yml`) never runs in production. See `docs/DECISIONS.md`'s Sentry section.
+- Create a free Sentry account at [sentry.io](https://sentry.io) (the free Developer plan covers this project's scale: 5K errors/month, no card required).
+- Create two projects — one **Go** platform project (covers every backend service: `auth-service`, `skills-service`, `users-service`, `jobs-service`, `api-gateway`, `allinone`, and `notification-service` if you also run it), one **React**/JavaScript platform project (the frontend) — each gives you a DSN.
+- On Render, set `SENTRY_DSN` (the Go project's DSN) on the `skill-bridge-allinone` service (see `render.yaml`).
+- On Vercel, set `VITE_SENTRY_DSN` (the React project's DSN) as a project environment variable, same place `VITE_API_URL` is set.
+- Optional: to get real stack traces instead of minified/bundled ones for frontend errors, also set `SENTRY_AUTH_TOKEN` (a Sentry auth token, from Settings → Auth Tokens), `SENTRY_ORG`, and `SENTRY_PROJECT` as Vercel **build-time** environment variables (not `VITE_`-prefixed — see `docs/SECURITY.md` for why). `frontend/vite.config.ts` uploads source maps to Sentry during `npm run build` only when all three are set; the build works identically without them, just with less readable stack traces.
+- Nothing else needs redeploying to activate this — every service already checks for these env vars at startup and degrades gracefully when they're unset (see `internal/platform/sentry` and `src/lib/sentry.ts`).
+
+## 7. Optional: AWS keep-alive Lambda (CloudFormation + Lambda + CloudWatch)
+
+- Prevents two real free-tier failure modes documented above: Render's ~15-minute idle spin-down (step 2) and Supabase's 7-day auto-pause (step 1) — one scheduled Lambda ping to `/readyz` (which itself pings Postgres) keeps both warm. See `infra/aws/keepalive-lambda/README.md` for the full design and `docs/DECISIONS.md`'s "AWS keep-alive Lambda" section for the reasoning.
+- Create a free AWS account (no ongoing charge at this workload's scale — see the README's cost accounting) and install/configure the [AWS CLI](https://aws.amazon.com/cli/) (`aws configure`).
+- Deploy:
+  ```bash
+  aws cloudformation deploy \
+    --template-file infra/aws/keepalive-lambda/template.yaml \
+    --stack-name skillbridge-keepalive \
+    --parameter-overrides \
+        TargetHealthUrl=https://<your-render-service>.onrender.com/readyz \
+        AlertEmail=<your-email> \
+    --capabilities CAPABILITY_IAM
+  ```
+- If you set `AlertEmail`, confirm the subscription link AWS/SNS emails you right after the stack deploys — the alarm won't notify you until you do (this is SNS's own design, not scriptable).
+- Nothing in this repo's own deploy (Render/Vercel) depends on this stack — it's a purely additive keep-alive, safe to skip entirely or add later.
+
 ## What you'll have after this
 
-A live, publicly reachable job/skill-matching app — register, login, post jobs, list skills, get matched, all through the deployed GraphQL API and (once the frontend is actually built out — see `docs/PROJECT_OVERVIEW.md`'s "where this is headed") a real UI. Async flows (Kafka matching triggers, RabbitMQ notifications, WebSocket push) stay local/kind-only; that gap is intentional, not a bug — see `docs/DECISIONS.md`'s "Production deployment: a single allinone binary" section for the full reasoning.
+A live, publicly reachable job/skill-matching app — register, login, post jobs, list skills, get matched, all through the deployed GraphQL API and (once the frontend is actually built out — see `docs/PROJECT_OVERVIEW.md`'s "where this is headed") a real UI. Async flows (Kafka matching triggers, RabbitMQ notifications, WebSocket push) stay local/kind-only; that gap is intentional, not a bug — see `docs/DECISIONS.md`'s "Production deployment: a single allinone binary" section for the full reasoning. Steps 6–7 (Sentry, the AWS keep-alive Lambda) are optional and purely additive — the app is fully live and functional without either.

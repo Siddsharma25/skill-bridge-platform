@@ -29,8 +29,10 @@ changes here.
   is.
 - **`internal/platform`** — the shared foundation every service uses:
   logging, request-ID propagation, health checks, graceful shutdown, the
-  Postgres connection helper, and JWKS signing/verification. Built once in
-  Phase 1a, reused unchanged by every service added since.
+  Postgres connection helper, JWKS signing/verification, Redis caching,
+  Kafka/RabbitMQ clients, and Sentry error tracking (added across later
+  phases — see its own README for the full list). Built once in Phase 1a,
+  extended, not reimplemented per-service, as later phases needed more.
 - **`proto/`** — gRPC contracts, proto-first via `buf`. See `proto/README.md`.
 - **`gen/`** — generated Go stubs from `proto/`. **Committed to git**, not
   regenerated as a hidden prerequisite — a clean checkout builds without
@@ -134,6 +136,8 @@ docker compose -f ../docker/docker-compose.observability.yml up -d
 ```
 
 Brings up Jaeger (distributed tracing, UI at http://localhost:16686), Loki+Promtail (centralized logging — tails every service's `/tmp/*.log` file from local-dev verification runs), Prometheus (scrapes api-gateway's `/metrics`), and Grafana (http://localhost:3300, anonymous admin, all three pre-provisioned as datasources). Set `OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317` on `api-gateway`/`allinone`/`skills-service` (or any other service you've instrumented) to start sending traces — see `internal/platform/tracing` and `docs/DECISIONS.md`'s tracing/logging notes for the full design and how this was verified.
+
+**This whole stack is local/`kind`-only** — none of it runs in production (see `docs/DEPLOYMENT.md`). **Sentry** (`internal/platform/sentry`) is the one piece of observability that *does* run in production: set `SENTRY_DSN` (any service, including local dev) to get error tracking and log capture — every `cmd/*/main.go` degrades gracefully with it unset, same as every other optional dependency here. See `internal/platform/README.md`'s `sentry` section and `docs/DECISIONS.md`'s Sentry section for the full design.
 
 ## Deploying
 

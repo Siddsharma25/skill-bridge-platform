@@ -25,6 +25,7 @@ import (
 	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
+	sentryplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/sentry"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/tracing"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/skills"
@@ -42,6 +43,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = log.Sync() }()
+
+	// Sentry (error tracking + log capture): degrades gracefully, same
+	// pattern as every other optional dependency in this file. See
+	// internal/platform/sentry and docs/DECISIONS.md's Sentry section.
+	sentryHandle := sentryplat.InitFromEnv(os.Getenv, "skills-service", log)
+	defer sentryHandle.Flush(2 * time.Second)
+	log = log.WithOptions(zap.WrapCore(sentryHandle.WrapCore))
 
 	// Distributed tracing — see cmd/api-gateway/main.go's identical block
 	// and internal/platform/tracing's package doc comment. This is what
@@ -93,7 +101,7 @@ func main() {
 	skillsServer := skills.NewServer(gormDB, redisCache, kafkaProducer, log)
 
 	grpcServer := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),
+		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor(), sentryHandle.UnaryServerInterceptor()),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	)
 	skillsv1.RegisterSkillsServiceServer(grpcServer, skillsServer)

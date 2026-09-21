@@ -159,6 +159,12 @@ hoping `Promise.all` resolves them in a convenient order. See
 writeup (this is the same race class as the consumer-attachment fix on
 the startup side, mirrored on shutdown).
 
+## Error tracking (Sentry)
+
+`src/main.ts`'s `initSentry()` (called before `NestFactory.create`) is a no-op unless `SENTRY_DSN` is set — same degrade-gracefully convention as `RabbitmqConnectionService`/`PgService`. `src/rabbitmq/rabbitmq.consumer.ts` reports both of its real failure paths (a malformed message, an unexpected processing error) via `Sentry.captureException` alongside the existing pino log line — deliberately narrow, not a general instrumentation sweep: this service's only HTTP surface is health checks, so there's no request-layer traffic Sentry's usual auto-instrumentation would otherwise catch, and the RabbitMQ consumer is the one place this service's own bugs could otherwise go unnoticed.
+
+**Only local/`kind` value today, not production** — this service isn't part of `render.yaml`'s deploy (see `backend/cmd/allinone/main.go`'s package doc comment: notification-service and its async flows are deliberately excluded from the production shape). Wired in anyway per this repo's stated rule that shared observability plumbing isn't optional per-service boilerplate to skip. See `docs/DECISIONS.md`'s Sentry section.
+
 ## Local run
 
 ```

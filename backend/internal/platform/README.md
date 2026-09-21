@@ -121,6 +121,19 @@ sequence hanging indefinitely (confirmed via a `SIGQUIT` goroutine dump
 showing the main goroutine parked in `amqp091-go.(*Channel).call`). See
 `docs/DECISIONS.md`'s Phase 3.5 notes for the full writeup.
 
+## sentry
+
+Wraps `github.com/getsentry/sentry-go`, added to close a real gap: production (`cmd/allinone` on Render) shipped with zero error visibility before this — the Prometheus/Loki/Jaeger stack (`docker/docker-compose.observability.yml`) is local/`kind`-only. Same degrade-gracefully convention as every package above: no `SENTRY_DSN` means every method on the returned `*sentry.Handle` becomes a safe no-op, logged once, never a startup failure.
+
+Two things beyond "send errors to Sentry":
+
+- **`Handle.WrapCore` attaches a Sentry-reporting `zapcore.Core` (via `github.com/TheZeroSlave/zapsentry`) alongside each service's own core**, so every `zap.Error`/`zap.Fatal` call already in this codebase also reports to Sentry — one extra line per `cmd/*/main.go`, not a sweep of every log call site.
+- **`Handle.UnaryServerInterceptor()` recovers a panicking gRPC handler unconditionally**, even with no `SENTRY_DSN` set — discovered while wiring this in: grpc-go doesn't recover a panicking handler on its own, and nothing else in this codebase's gRPC chain did either, so a handler panic crashed the whole process (in `cmd/allinone`, all four backend services + the gateway at once). This is a genuine reliability fix, not just an observability bolt-on; see `docs/DECISIONS.md`'s Sentry section.
+
+`Handle.RecoverMiddleware` (net/http, via `github.com/getsentry/sentry-go/http`) is the HTTP-layer counterpart, wired onto `api-gateway`'s and `allinone`'s public HTTP server — the two processes with real external exposure.
+
+Never captures request/response bodies (`DataCollection.HTTPBodies` set to an explicit empty slice in `InitFromEnv`) — verified by reading `sentry-go`'s own `data_collection.go`, whose documented default is to collect every body type verbatim otherwise. This app's `register`/`login` mutations carry a plaintext password in the POST body; see `docs/SECURITY.md`.
+
 ## jwks
 
 Two sides of the same coin. On auth-service: generate (or load from env)

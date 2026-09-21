@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Render/Supabase keep-alive: an EventBridge-scheduled Lambda that pings the
+  deployed backend's /readyz every 10 minutes. See README.md in this
+  directory and docs/DECISIONS.md's "AWS keep-alive Lambda" section for the
+  full reasoning. Stays inside AWS's *permanent* free tier (Lambda, Logs,
+  and SNS all have an "always free" monthly allowance, not a 12-month
+  trial) at this invocation volume (~4,320 invocations/month).
+
+# Why /readyz, not /healthz: /healthz is liveness only (no dependency
+# checks — see backend/internal/platform/health's README). /readyz is what
+# actually pings Postgres (backend/cmd/allinone/main.go's readyCheckDB),
+# so one ping keeps BOTH Render's process warm (any HTTP request resets
+# its ~15-minute idle timer, see docs/DEPLOYMENT.md) AND Supabase's
+# connection recent enough to dodge its 7-day free-tier auto-pause — two
+# real, separately-documented free-tier failure modes, addressed by one
+# function instead of two.
+
+Parameters:
+  TargetHealthUrl:
+    Type: String
+    Description: >
+      Full URL of the deployed backend's /readyz endpoint, e.g.
+      https://your-service.onrender.com/readyz. Required — this stack does
+      nothing useful without a real target.
+    AllowedPattern: "^https://.+$"
+    ConstraintDescription: must be an https:// URL
+
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Optional email address to notify when the keep-alive ping fails
+      twice in a row (~20 minutes of sustained failure — see the Alarm
+      resource below). Leave blank to deploy with no alerting; the stack
+      still works (pings run, logs still accumulate), there's just no one
+      told if it stops succeeding. Subscribing an email requires
+      confirming a link AWS/SNS emails you after this stack deploys — that
+      one step can't be scripted, see README.md.
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+
+Resources:
+  # Declared explicitly (RetentionInDays set) rather than letting Lambda
+  # auto-create its own default log group on first invocation, which
+  # defaults to "Never expire" — a health-check ping's logs are genuinely
+  # tiny, but "$0-forever" only holds if nothing here quietly accumulates
+  # forever. See docs/SECURITY.md for the IAM role this pairs with.
+  KeepAliveLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-keepalive"
+      RetentionInDays: 14
+
+  # Least-privilege on purpose: exactly logs:CreateLogStream/PutLogEvents
+  # on this one log group's ARN, not the managed
+  # AWSLambdaBasicExecutionRole (which grants logs:* across every log
+  # group matching /aws/lambda/* by wildcard, repo-wide — broader than
+  # this one function ever needs). See docs/SECURITY.md.
+  KeepAliveExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteToOwnLogGroupOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${KeepAliveLogGroup.Arn}:*"
+
+  # Inline ZipFile source (well under CloudFormation's 4KB inline-code
+  # limit) — deliberately, so this whole stack deploys with nothing beyond
+  # `aws cloudformation deploy`: no S3 bucket to create/manage/pay for, no
+  # `sam build`/packaging step. CommonJS, not ESM: an inline ZipFile has no
+  # package.json to set "type": "module", and Lambda's Node runtime
+  # defaults an unmarked .js file to CommonJS. Uses the runtime's built-in
+  # global fetch (Node 18+) — zero npm dependencies to bundle.
+  KeepAliveFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-keepalive"
+      Description: Pings TargetHealthUrl (the backend's /readyz) to keep Render and Supabase's free tiers warm.
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt KeepAliveExecutionRole.Arn
+      Timeout: 15
+      MemorySize: 128
+      LoggingConfig:
+        LogGroup: !Ref KeepAliveLogGroup
+      Environment:
+        Variables:
+          TARGET_URL: !Ref TargetHealthUrl
+      Code:
+        ZipFile: |
+          exports.handler = async () => {
+            const url = process.env.TARGET_URL;
+            const start = Date.now();
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+            try {
+              const res = await fetch(url, { signal: controller.signal });
+              const elapsedMs = Date.now() - start;
+              const body = { url, status: res.status, ok: res.ok, elapsedMs };
+              console.log(JSON.stringify(body));
+              if (!res.ok) {
+                // A non-2xx /readyz response (e.g. DATABASE_URL unset/
+                // unreachable) is a real signal, not a transport error —
+                // still throw so it counts toward the Errors metric the
+                // Alarm below watches.
+                throw new Error(`/readyz returned ${res.status}`);
+              }
+              return body;
+            } catch (err) {
+              console.error(JSON.stringify({ url, error: String(err), elapsedMs: Date.now() - start }));
+              throw err;
+            } finally {
+              clearTimeout(timeout);
+            }
+          };
+
+  # EventBridge is the current name for what CloudWatch Events used to be
+  # called (renamed 2019) — the trigger technically lives under
+  # AWS::Events (EventBridge), while CloudWatch itself is used directly
+  # below for Logs and the Alarm. Noted here so this reads as a deliberate
+  # clarification, not confusion about which service is which.
+  KeepAliveScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Invokes the keep-alive Lambda every 10 minutes — comfortably under Render's ~15-minute free-tier idle spin-down window.
+      ScheduleExpression: rate(10 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt KeepAliveFunction.Arn
+          Id: KeepAliveTarget
+
+  KeepAliveInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref KeepAliveFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt KeepAliveScheduleRule.Arn
+
+  # Created unconditionally (an unused SNS topic costs nothing) so the
+  # Alarm resource below always has something to reference; only the
+  # email Subscription and the Alarm's AlarmActions are conditional on
+  # AlertEmail actually being set.
+  KeepAliveAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-alerts"
+
+  # SNS email subscriptions require the recipient to click a confirmation
+  # link AWS emails them — there is no way to script around that
+  # (deliberate anti-spam design on AWS's part), so this is one manual
+  # step README.md calls out explicitly, the same "nothing further can be
+  # automated without you" pattern docs/DEPLOYMENT.md uses throughout.
+  KeepAliveAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref KeepAliveAlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # Fires only after the ping fails in TWO CONSECUTIVE 10-minute periods
+  # (~20 minutes of sustained failure), not on the first miss — this
+  # tolerates one transient blip (a slow cold start, a momentary network
+  # hiccup) without paging anyone, while still catching a real outage.
+  # Threshold is 1 (not 2) precisely because this function runs at most
+  # once per 10-minute period: Errors can only ever be 0 or 1 within a
+  # single Period, so DatapointsToAlarm: 2 (both evaluation periods must
+  # individually breach) is what actually encodes "two failures in a
+  # row" — a Threshold of 2 within one period could mathematically never
+  # fire at this invocation rate.
+  KeepAliveErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-errors"
+      AlarmDescription: >
+        The /readyz keep-alive ping has failed on two consecutive checks
+        (~20 minutes) — the backend or its database is likely unreachable.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref KeepAliveFunction
+      Statistic: Sum
+      Period: 600
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # A period with no invocation at all (e.g. the schedule was briefly
+      # disabled) reports no data, not zero errors — treating that as
+      # "not breaching" avoids a false alarm from the absence of a check,
+      # as opposed to a check that actually failed.
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlertEmail, [!Ref KeepAliveAlertTopic], []]
+
+Outputs:
+  FunctionArn:
+    Description: The keep-alive Lambda's ARN.
+    Value: !GetAtt KeepAliveFunction.Arn
+
+  LogGroupName:
+    Description: Where each ping's status/latency (or failure) is logged.
+    Value: !Ref KeepAliveLogGroup
+
+  AlarmName:
+    Description: The CloudWatch Alarm watching for two consecutive failures.
+    Value: !Ref KeepAliveErrorAlarm
+
+  AlertTopicArn:
+    Condition: HasAlertEmail
+    Description: The SNS topic AlertEmail was subscribed to (confirm the email AWS sends after deploy).
+    Value: !Ref KeepAliveAlertTopic

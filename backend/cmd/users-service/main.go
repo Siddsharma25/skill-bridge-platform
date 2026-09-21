@@ -23,6 +23,7 @@ import (
 	kafkaplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/kafka"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/logger"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/requestid"
+	sentryplat "github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/sentry"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/platform/shutdown"
 	"github.com/Siddsharma25/skill-bridge-platform/backend/internal/users"
 )
@@ -39,6 +40,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = log.Sync() }()
+
+	// Sentry (error tracking + log capture): degrades gracefully, same
+	// pattern as every other optional dependency in this file. See
+	// internal/platform/sentry and docs/DECISIONS.md's Sentry section.
+	sentryHandle := sentryplat.InitFromEnv(os.Getenv, "users-service", log)
+	defer sentryHandle.Flush(2 * time.Second)
+	log = log.WithOptions(zap.WrapCore(sentryHandle.WrapCore))
 
 	grpcPort := envOr("PORT", "9003")
 	httpPort := envOr("HTTP_PORT", "8083")
@@ -66,7 +74,7 @@ func main() {
 	usersServer := users.NewServer(gormDB, kafkaProducer, log)
 
 	grpcServer := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor()),
+		grpc.ChainUnaryInterceptor(requestid.UnaryServerInterceptor(), sentryHandle.UnaryServerInterceptor()),
 	)
 	usersv1.RegisterUsersServiceServer(grpcServer, usersServer)
 	health.NewGRPCServer(grpcServer)

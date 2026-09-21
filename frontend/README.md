@@ -37,6 +37,14 @@ Two roles, `user` and `admin` (see `docs/DECISIONS.md`'s RBAC notes for the full
 
 A real pass across the existing pages, not a separate demo — see `docs/DECISIONS.md`'s Accessibility section for the full list and the WCAG success criteria each change addresses. In brief: a skip-to-content link (`Layout.tsx`), `aria-current="page"` on the active nav link, a fully ARIA-annotated + keyboard-closable notification bell with a live region (`NotificationsBell.tsx`), app-wide `prefers-reduced-motion` support (`index.css`), and a real page `<title>`. Honestly documented gaps: no automated accessibility testing (axe/Lighthouse) is wired in, and no actual screen-reader session confirmed the experience — everything here was reasoned through against the spec, not machine- or human-verified end-to-end.
 
+## Error tracking (Sentry)
+
+`src/lib/sentry.ts`'s `initSentry()` (called from `main.tsx`, before the first render) is a no-op unless `VITE_SENTRY_DSN` is set — same degrade-gracefully convention as everything else in `.env.example`. This closes a real gap: production (Vercel) had zero error visibility before this — an uncaught render error just showed a blank page with nothing to investigate. `App.tsx` wraps the whole route tree in `Sentry.ErrorBoundary` (a minimal "Something went wrong" fallback with a reload button); it's itself a no-op pass-through when Sentry was never initialized.
+
+`event.request.data` (any captured request body) is stripped in `beforeSend` — defense in depth alongside the backend's own body-capture opt-out (see `docs/SECURITY.md`). Performance tracing (`tracesSampleRate`) defaults to 0 (off), matching the backend's `SENTRY_TRACES_SAMPLE_RATE` default, so this doesn't silently burn Sentry's free-tier quota.
+
+Source map upload (`vite.config.ts`, `@sentry/vite-plugin`) is a separate, build-time-only opt-in gated on `SENTRY_AUTH_TOKEN`/`SENTRY_ORG`/`SENTRY_PROJECT` all being set — **never** as a `VITE_`-prefixed var, since those get inlined into the shipped bundle (see `docs/SECURITY.md`). `build.sourcemap` is `"hidden"` only when that upload is actually configured (generates `.map` files for the plugin to upload and then delete, without a `sourceMappingURL` comment in the shipped JS); otherwise it stays off entirely rather than shipping unreferenced map files for nothing.
+
 ## Testing (Vitest + React Testing Library)
 
 ```bash
